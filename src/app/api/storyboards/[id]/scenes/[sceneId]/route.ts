@@ -11,6 +11,7 @@ type Params = { params: Promise<{ id: string; sceneId: string }> };
 
 export async function PATCH(request: Request, { params }: Params) {
   const ctx = await withViewer(request);
+  if (ctx instanceof Response) return ctx;
   const { id, sceneId } = await params;
   const body = (await request.json().catch(() => ({}))) as {
     description?: string;
@@ -61,6 +62,7 @@ export async function PATCH(request: Request, { params }: Params) {
 
 export async function DELETE(request: Request, { params }: Params) {
   const ctx = await withViewer(request);
+  if (ctx instanceof Response) return ctx;
   const { id, sceneId } = await params;
   const ok = await deleteScene(
     id,

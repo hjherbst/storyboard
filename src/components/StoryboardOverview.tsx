@@ -17,16 +17,21 @@ export function StoryboardOverview() {
     let cancelled = false;
     fetch("/api/storyboards", { cache: "no-store" })
       .then(async (res) => {
+        if (res.status === 401) throw new Error("unauthorized");
         if (!res.ok) throw new Error("load_failed");
         return (await res.json()) as { storyboards: StoryboardSummary[] };
       })
       .then((data) => {
         if (!cancelled) setBoards(data.storyboards);
       })
-      .catch(() => {
+      .catch((err: Error) => {
         if (!cancelled) {
           setBoards([]);
-          setError("Storyboards konnten nicht geladen werden.");
+          setError(
+            err.message === "unauthorized"
+              ? "Bitte in Cursor anmelden und die App auf Private stellen."
+              : "Storyboards konnten nicht geladen werden.",
+          );
         }
       });
     return () => {
@@ -46,9 +51,11 @@ export function StoryboardOverview() {
       });
       if (!res.ok) {
         setError(
-          res.status === 429
-            ? "Limit erreicht — bitte bestehende Storyboards löschen."
-            : "Storyboard konnte nicht erstellt werden.",
+          res.status === 401
+            ? "Bitte in Cursor anmelden und die App auf Private stellen."
+            : res.status === 429
+              ? "Limit erreicht — bitte bestehende Storyboards löschen."
+              : "Storyboard konnte nicht erstellt werden.",
         );
         return;
       }

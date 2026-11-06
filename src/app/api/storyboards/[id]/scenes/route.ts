@@ -5,6 +5,7 @@ type Params = { params: Promise<{ id: string }> };
 
 export async function POST(request: Request, { params }: Params) {
   const ctx = await withViewer(request);
+  if (ctx instanceof Response) return ctx;
   const { id } = await params;
   const body = (await request.json().catch(() => ({}))) as {
     description?: string;

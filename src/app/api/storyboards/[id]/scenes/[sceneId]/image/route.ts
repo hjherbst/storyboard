@@ -8,6 +8,7 @@ const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
 export async function GET(request: Request, { params }: Params) {
   const ctx = await withViewer(request);
+  if (ctx instanceof Response) return ctx;
   const { id, sceneId } = await params;
 
   const image = await getSceneImage(
@@ -23,6 +24,7 @@ export async function GET(request: Request, { params }: Params) {
 
 export async function POST(request: Request, { params }: Params) {
   const ctx = await withViewer(request);
+  if (ctx instanceof Response) return ctx;
   const { id, sceneId } = await params;
 
   const form = await request.formData().catch(() => null);

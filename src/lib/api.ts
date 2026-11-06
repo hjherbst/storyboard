@@ -7,7 +7,7 @@ import {
 
 export async function withViewer(
   request: Request,
-): Promise<ViewerContext> {
+): Promise<ViewerContext | Response> {
   return resolveViewer(request);
 }
 
@@ -22,10 +22,7 @@ export function json(
   });
 }
 
-export function empty(
-  ctx: ViewerContext,
-  status = 204,
-): Response {
+export function empty(ctx: ViewerContext, status = 204): Response {
   return new Response(null, {
     status,
     headers: withViewerHeaders({ status }, ctx),

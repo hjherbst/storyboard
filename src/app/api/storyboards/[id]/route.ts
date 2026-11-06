@@ -9,6 +9,7 @@ type Params = { params: Promise<{ id: string }> };
 
 export async function GET(request: Request, { params }: Params) {
   const ctx = await withViewer(request);
+  if (ctx instanceof Response) return ctx;
   const { id } = await params;
   const board = await getStoryboardOwned(
     id,
@@ -21,6 +22,7 @@ export async function GET(request: Request, { params }: Params) {
 
 export async function PATCH(request: Request, { params }: Params) {
   const ctx = await withViewer(request);
+  if (ctx instanceof Response) return ctx;
   const { id } = await params;
   const body = (await request.json().catch(() => ({}))) as {
     title?: string;
@@ -38,6 +40,7 @@ export async function PATCH(request: Request, { params }: Params) {
 
 export async function DELETE(request: Request, { params }: Params) {
   const ctx = await withViewer(request);
+  if (ctx instanceof Response) return ctx;
   const { id } = await params;
   const ok = await deleteStoryboard(
     id,
