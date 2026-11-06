@@ -283,8 +283,8 @@ export function StoryboardEditor({ storyboardId }: Props) {
                 <div className="empty-state empty-state--compact">
                   <p>
                     Noch keine Szenen. Füge die erste hinzu und wähle ein Foto
-                    aus der Galerie oder der Kamera (wird als WebP ≤120 KB
-                    gespeichert).
+                    aus der Galerie oder der Kamera (16:9-Vorschau, WebP ≤120 KB
+                    bei ca. 420 px Breite).
                   </p>
                 </div>
               ) : (
