@@ -31,13 +31,17 @@ export function empty(_ctx: ViewerContext, status = 204): Response {
 
 export function binary(
   _ctx: ViewerContext,
-  data: Uint8Array,
+  data: Buffer,
   contentType: string,
 ): Response {
   const headers = withViewerHeaders();
   headers.set("content-type", contentType);
   headers.set("content-length", String(data.byteLength));
-  return new Response(data, { headers });
+  headers.set("x-content-type-options", "nosniff");
+  // Copy into a fresh ArrayBuffer-backed Uint8Array for the Fetch BodyInit type.
+  const copy = new Uint8Array(data.byteLength);
+  copy.set(data);
+  return new Response(copy, { headers });
 }
 
 export { viewerStage };

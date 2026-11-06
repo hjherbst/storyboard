@@ -1,4 +1,5 @@
 import { empty, json, viewerStage, withViewer } from "@/lib/api";
+import { readJsonBody } from "@/lib/request-limits";
 import {
   clearSceneImage,
   deleteScene,
@@ -10,16 +11,19 @@ import {
 type Params = { params: Promise<{ id: string; sceneId: string }> };
 
 export async function PATCH(request: Request, { params }: Params) {
-  const ctx = await withViewer(request);
-  if (ctx instanceof Response) return ctx;
-  const { id, sceneId } = await params;
-  const body = (await request.json().catch(() => ({}))) as {
+  const parsed = await readJsonBody<{
     description?: string;
     durationSeconds?: number;
     position?: number;
     move?: "up" | "down";
     clearImage?: boolean;
-  };
+  }>(request);
+  if (!parsed.ok) return parsed.response;
+
+  const ctx = await withViewer(request);
+  if (ctx instanceof Response) return ctx;
+  const { id, sceneId } = await params;
+  const body = parsed.body;
 
   if (body.move === "up" || body.move === "down") {
     const board = await moveScene(

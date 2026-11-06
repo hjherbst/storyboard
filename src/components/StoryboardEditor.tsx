@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { formatDuration, formatUpdatedAt } from "@/lib/format";
+import { compressImageToWebp } from "@/lib/image-compress";
 import type { Scene, StoryboardDetail } from "@/lib/types";
 
 type Props = { storyboardId: string };
@@ -150,23 +151,35 @@ export function StoryboardEditor({ storyboardId }: Props) {
   }
 
   async function uploadImage(sceneId: string, file: File) {
-    const form = new FormData();
-    form.append("image", file);
-    const res = await fetch(
-      `/api/storyboards/${storyboardId}/scenes/${sceneId}/image`,
-      { method: "POST", body: form },
-    );
-    if (!res.ok) {
-      setError(
-        res.status === 400
-          ? "Bild ungültig (JPG/PNG/WebP/GIF, max. 2 MB)."
-          : res.status === 429
-            ? "Bild-Limit erreicht."
-            : "Bild-Upload fehlgeschlagen.",
+    try {
+      const compressed = await compressImageToWebp(file);
+      const form = new FormData();
+      form.append("image", compressed);
+      const res = await fetch(
+        `/api/storyboards/${storyboardId}/scenes/${sceneId}/image`,
+        { method: "POST", body: form },
       );
-      return;
+      if (!res.ok) {
+        setError(
+          res.status === 400 || res.status === 413
+            ? "Bild ungültig oder zu groß (WebP, max. 120 KB)."
+            : res.status === 429
+              ? "Bild-Limit erreicht."
+              : "Bild-Upload fehlgeschlagen.",
+        );
+        return;
+      }
+      await refreshBoard();
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      setError(
+        code === "webp_unsupported"
+          ? "Dieses Gerät kann keine WebP-Bilder erzeugen."
+          : code === "too_large"
+            ? "Bild ließ sich nicht unter 120 KB komprimieren."
+            : "Bild konnte nicht vorbereitet werden.",
+      );
     }
-    await refreshBoard();
   }
 
   async function removeScene(sceneId: string) {
@@ -269,8 +282,9 @@ export function StoryboardEditor({ storyboardId }: Props) {
               {board.scenes.length === 0 ? (
                 <div className="empty-state empty-state--compact">
                   <p>
-                    Noch keine Szenen. Füge die erste Szene hinzu und lade ein
-                    Foto vom Handy hoch.
+                    Noch keine Szenen. Füge die erste hinzu und wähle ein Foto
+                    aus der Galerie oder der Kamera (wird als WebP ≤120 KB
+                    gespeichert).
                   </p>
                 </div>
               ) : (
@@ -309,13 +323,12 @@ export function StoryboardEditor({ storyboardId }: Props) {
                           <img src={scene.imageUrl} alt="" />
                         ) : (
                           <span className="scene-frame__placeholder">
-                            Foto hochladen
+                            Foto oder Galerie
                           </span>
                         )}
                         <input
                           type="file"
-                          accept="image/jpeg,image/png,image/webp,image/gif"
-                          capture="environment"
+                          accept="image/*"
                           className="sr-only"
                           onChange={(event) => {
                             const file = event.target.files?.[0];

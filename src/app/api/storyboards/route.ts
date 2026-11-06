@@ -1,4 +1,5 @@
 import { json, viewerStage, withViewer } from "@/lib/api";
+import { readJsonBody } from "@/lib/request-limits";
 import { createStoryboard, listStoryboards } from "@/lib/storyboards";
 
 export async function GET(request: Request) {
@@ -16,20 +17,20 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const parsed = await readJsonBody<{ title?: string; summary?: string }>(
+    request,
+  );
+  if (!parsed.ok) return parsed.response;
+
   const ctx = await withViewer(request);
   if (ctx instanceof Response) return ctx;
-
-  const body = (await request.json().catch(() => ({}))) as {
-    title?: string;
-    summary?: string;
-  };
 
   try {
     const board = await createStoryboard(
       ctx.viewer.sub,
       viewerStage(ctx.viewer),
-      body.title ?? "Neues Storyboard",
-      body.summary ?? "",
+      parsed.body.title ?? "Neues Storyboard",
+      parsed.body.summary ?? "",
     );
     return json(ctx, { storyboard: board }, { status: 201 });
   } catch (error) {

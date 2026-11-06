@@ -1,4 +1,5 @@
 import { empty, json, viewerStage, withViewer } from "@/lib/api";
+import { readJsonBody } from "@/lib/request-limits";
 import {
   deleteStoryboard,
   getStoryboardOwned,
@@ -21,18 +22,19 @@ export async function GET(request: Request, { params }: Params) {
 }
 
 export async function PATCH(request: Request, { params }: Params) {
+  const parsed = await readJsonBody<{ title?: string; summary?: string }>(
+    request,
+  );
+  if (!parsed.ok) return parsed.response;
+
   const ctx = await withViewer(request);
   if (ctx instanceof Response) return ctx;
   const { id } = await params;
-  const body = (await request.json().catch(() => ({}))) as {
-    title?: string;
-    summary?: string;
-  };
   const board = await updateStoryboard(
     id,
     ctx.viewer.sub,
     viewerStage(ctx.viewer),
-    body,
+    parsed.body,
   );
   if (!board) return json(ctx, { error: "not_found" }, { status: 404 });
   return json(ctx, { storyboard: board });
