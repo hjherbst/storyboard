@@ -1,8 +1,28 @@
 const MAX_BYTES = 120 * 1024;
-const MAX_EDGE = 1600;
+/** Target display width for YouTube-oriented scene stills. */
+const TARGET_WIDTH = 420;
+const MIN_WIDTH = 160;
 
 function loadBitmap(file: File): Promise<ImageBitmap> {
-  return createImageBitmap(file);
+  // Honor EXIF orientation so phone photos are not sideways after encode.
+  return createImageBitmap(file, { imageOrientation: "from-image" }).catch(() =>
+    createImageBitmap(file),
+  );
+}
+
+function scaleToWidth(
+  width: number,
+  height: number,
+  targetWidth: number,
+): { width: number; height: number } {
+  if (width <= targetWidth) {
+    return { width: Math.max(1, width), height: Math.max(1, height) };
+  }
+  const scale = targetWidth / width;
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
 }
 
 async function encodeWebp(
@@ -15,8 +35,8 @@ async function encodeWebp(
 }
 
 /**
- * Resize and encode an image as WebP, targeting at most 120 KB.
- * Works for camera captures and media-library picks.
+ * Resize to ~420px width and encode as WebP under 120 KB.
+ * At this size WebP fits the budget easily; quality and width are lowered only as fallback.
  */
 export async function compressImageToWebp(file: File): Promise<File> {
   if (!file.type.startsWith("image/")) {
@@ -24,14 +44,11 @@ export async function compressImageToWebp(file: File): Promise<File> {
   }
 
   const bitmap = await loadBitmap(file);
-  let width = bitmap.width;
-  let height = bitmap.height;
-
-  if (width > MAX_EDGE || height > MAX_EDGE) {
-    const scale = MAX_EDGE / Math.max(width, height);
-    width = Math.max(1, Math.round(width * scale));
-    height = Math.max(1, Math.round(height * scale));
-  }
+  let { width, height } = scaleToWidth(
+    bitmap.width,
+    bitmap.height,
+    TARGET_WIDTH,
+  );
 
   const canvas = document.createElement("canvas");
   const ctx = canvas.getContext("2d");
@@ -40,39 +57,40 @@ export async function compressImageToWebp(file: File): Promise<File> {
     throw new Error("compress_failed");
   }
 
-  let quality = 0.82;
+  const qualities = [0.8, 0.7, 0.6, 0.5, 0.4, 0.32, 0.25];
   let blob: Blob | null = null;
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  while (true) {
     canvas.width = width;
     canvas.height = height;
     ctx.clearRect(0, 0, width, height);
     ctx.drawImage(bitmap, 0, 0, width, height);
-    blob = await encodeWebp(canvas, quality);
 
-    if (!blob) {
-      bitmap.close();
-      throw new Error("webp_unsupported");
+    for (const quality of qualities) {
+      blob = await encodeWebp(canvas, quality);
+      if (!blob) {
+        bitmap.close();
+        throw new Error("webp_unsupported");
+      }
+      if (blob.size <= MAX_BYTES) {
+        bitmap.close();
+        return new File([blob], "scene.webp", {
+          type: "image/webp",
+          lastModified: Date.now(),
+        });
+      }
     }
-    if (blob.size <= MAX_BYTES) break;
 
-    if (quality > 0.45) {
-      quality -= 0.08;
-    } else {
-      width = Math.max(1, Math.round(width * 0.82));
-      height = Math.max(1, Math.round(height * 0.82));
-      quality = Math.max(0.4, quality);
+    if (width <= MIN_WIDTH) {
+      break;
     }
+
+    const nextWidth = Math.max(MIN_WIDTH, Math.round(width * 0.75));
+    const scale = nextWidth / width;
+    width = nextWidth;
+    height = Math.max(1, Math.round(height * scale));
   }
 
   bitmap.close();
-
-  if (!blob || blob.size > MAX_BYTES) {
-    throw new Error("too_large");
-  }
-
-  return new File([blob], "scene.webp", {
-    type: "image/webp",
-    lastModified: Date.now(),
-  });
+  throw new Error("too_large");
 }

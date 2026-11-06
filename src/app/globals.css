@@ -352,7 +352,7 @@ textarea {
 
 .scene-item {
   display: grid;
-  grid-template-columns: auto minmax(140px, 220px) 1fr;
+  grid-template-columns: auto minmax(220px, 360px) 1fr;
   gap: 1rem;
   padding: 1rem;
   border-radius: var(--radius);
@@ -394,7 +394,7 @@ textarea {
   position: relative;
   display: grid;
   place-items: center;
-  aspect-ratio: 4 / 5;
+  aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 14px;
   border: 1px solid var(--line);
@@ -491,7 +491,7 @@ textarea {
 
   .scene-frame {
     grid-column: 1 / -1;
-    max-width: 280px;
+    max-width: 420px;
   }
 }
 
