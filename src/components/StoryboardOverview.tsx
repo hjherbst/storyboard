@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useState } from "react";
 import { SiteHeader } from "@/components/SiteHeader";
 import { formatDuration, formatUpdatedAt } from "@/lib/format";
 import type { StoryboardSummary } from "@/lib/types";
@@ -11,7 +11,7 @@ export function StoryboardOverview() {
   const router = useRouter();
   const [boards, setBoards] = useState<StoryboardSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pending, startTransition] = useTransition();
+  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -24,16 +24,21 @@ export function StoryboardOverview() {
         if (!cancelled) setBoards(data.storyboards);
       })
       .catch(() => {
-        if (!cancelled) setError("Storyboards konnten nicht geladen werden.");
+        if (!cancelled) {
+          setBoards([]);
+          setError("Storyboards konnten nicht geladen werden.");
+        }
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  function createBoard() {
-    startTransition(async () => {
-      setError(null);
+  async function createBoard() {
+    if (creating) return;
+    setCreating(true);
+    setError(null);
+    try {
       const res = await fetch("/api/storyboards", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -45,7 +50,11 @@ export function StoryboardOverview() {
       }
       const data = (await res.json()) as { storyboard: StoryboardSummary };
       router.push(`/storyboards/${data.storyboard.id}`);
-    });
+    } catch {
+      setError("Storyboard konnte nicht erstellt werden.");
+    } finally {
+      setCreating(false);
+    }
   }
 
   return (
@@ -57,10 +66,10 @@ export function StoryboardOverview() {
           <button
             type="button"
             className="btn btn-primary"
-            onClick={createBoard}
-            disabled={pending}
+            onClick={() => void createBoard()}
+            disabled={creating}
           >
-            {pending ? "Erstelle…" : "Neues Storyboard"}
+            {creating ? "Erstelle…" : "Neues Storyboard"}
           </button>
         }
       />
@@ -87,8 +96,8 @@ export function StoryboardOverview() {
             <button
               type="button"
               className="btn btn-primary"
-              onClick={createBoard}
-              disabled={pending}
+              onClick={() => void createBoard()}
+              disabled={creating}
             >
               Erstes Storyboard anlegen
             </button>
