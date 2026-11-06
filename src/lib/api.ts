@@ -12,29 +12,29 @@ export async function withViewer(
 }
 
 export function json(
-  ctx: ViewerContext,
+  _ctx: ViewerContext,
   body: unknown,
   init: ResponseInit = {},
 ): Response {
   return Response.json(body, {
     ...init,
-    headers: withViewerHeaders(init, ctx),
+    headers: withViewerHeaders(init),
   });
 }
 
-export function empty(ctx: ViewerContext, status = 204): Response {
+export function empty(_ctx: ViewerContext, status = 204): Response {
   return new Response(null, {
     status,
-    headers: withViewerHeaders({ status }, ctx),
+    headers: withViewerHeaders({ status }),
   });
 }
 
 export function binary(
-  ctx: ViewerContext,
+  _ctx: ViewerContext,
   data: Uint8Array,
   contentType: string,
 ): Response {
-  const headers = withViewerHeaders({}, ctx);
+  const headers = withViewerHeaders();
   headers.set("content-type", contentType);
   headers.set("content-length", String(data.byteLength));
   return new Response(data, { headers });

@@ -35,10 +35,7 @@ export function viewerStage(viewer: AppViewer): "production" | "preview" {
   return viewer.stage === "preview" ? "preview" : "production";
 }
 
-export function withViewerHeaders(
-  init: ResponseInit | undefined,
-  _ctx: ViewerContext,
-): Headers {
+export function withViewerHeaders(init?: ResponseInit): Headers {
   const headers = new Headers(init?.headers);
   for (const [key, value] of Object.entries(privateHeaders)) {
     if (!headers.has(key)) headers.set(key, value);
