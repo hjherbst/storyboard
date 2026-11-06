@@ -1,4 +1,4 @@
-import { privateHeaders, requireViewer, viewerStage } from "@/lib/auth";
+import { empty, json, viewerStage, withViewer } from "@/lib/api";
 import {
   clearSceneImage,
   deleteScene,
@@ -10,8 +10,7 @@ import {
 type Params = { params: Promise<{ id: string; sceneId: string }> };
 
 export async function PATCH(request: Request, { params }: Params) {
-  const identity = await requireViewer(request);
-  if (identity instanceof Response) return identity;
+  const ctx = await withViewer(request);
   const { id, sceneId } = await params;
   const body = (await request.json().catch(() => ({}))) as {
     description?: string;
@@ -25,72 +24,50 @@ export async function PATCH(request: Request, { params }: Params) {
     const board = await moveScene(
       id,
       sceneId,
-      identity.sub,
-      viewerStage(identity),
+      ctx.viewer.sub,
+      viewerStage(ctx.viewer),
       body.move,
     );
-    if (!board) {
-      return Response.json(
-        { error: "not_found" },
-        { status: 404, headers: privateHeaders },
-      );
-    }
-    return Response.json({ storyboard: board }, { headers: privateHeaders });
+    if (!board) return json(ctx, { error: "not_found" }, { status: 404 });
+    return json(ctx, { storyboard: board });
   }
 
   if (body.clearImage) {
     const scene = await clearSceneImage(
       id,
       sceneId,
-      identity.sub,
-      viewerStage(identity),
+      ctx.viewer.sub,
+      viewerStage(ctx.viewer),
     );
-    if (!scene) {
-      return Response.json(
-        { error: "not_found" },
-        { status: 404, headers: privateHeaders },
-      );
-    }
-    return Response.json({ scene }, { headers: privateHeaders });
+    if (!scene) return json(ctx, { error: "not_found" }, { status: 404 });
+    return json(ctx, { scene });
   }
 
   const scene = await updateScene(
     id,
     sceneId,
-    identity.sub,
-    viewerStage(identity),
+    ctx.viewer.sub,
+    viewerStage(ctx.viewer),
     body,
   );
-  if (!scene) {
-    return Response.json(
-      { error: "not_found" },
-      { status: 404, headers: privateHeaders },
-    );
-  }
+  if (!scene) return json(ctx, { error: "not_found" }, { status: 404 });
   const board = await getStoryboardOwned(
     id,
-    identity.sub,
-    viewerStage(identity),
+    ctx.viewer.sub,
+    viewerStage(ctx.viewer),
   );
-  return Response.json({ scene, storyboard: board }, { headers: privateHeaders });
+  return json(ctx, { scene, storyboard: board });
 }
 
 export async function DELETE(request: Request, { params }: Params) {
-  const identity = await requireViewer(request);
-  if (identity instanceof Response) return identity;
+  const ctx = await withViewer(request);
   const { id, sceneId } = await params;
-
   const ok = await deleteScene(
     id,
     sceneId,
-    identity.sub,
-    viewerStage(identity),
+    ctx.viewer.sub,
+    viewerStage(ctx.viewer),
   );
-  if (!ok) {
-    return Response.json(
-      { error: "not_found" },
-      { status: 404, headers: privateHeaders },
-    );
-  }
-  return new Response(null, { status: 204, headers: privateHeaders });
+  if (!ok) return json(ctx, { error: "not_found" }, { status: 404 });
+  return empty(ctx);
 }

@@ -1,23 +1,29 @@
-import { privateHeaders, requireViewer, viewerStage } from "@/lib/auth";
+import { json, viewerStage, withViewer } from "@/lib/api";
 import { createScene } from "@/lib/storyboards";
 
 type Params = { params: Promise<{ id: string }> };
 
 export async function POST(request: Request, { params }: Params) {
-  const identity = await requireViewer(request);
-  if (identity instanceof Response) return identity;
+  const ctx = await withViewer(request);
   const { id } = await params;
   const body = (await request.json().catch(() => ({}))) as {
     description?: string;
     durationSeconds?: number;
   };
 
-  const scene = await createScene(id, identity.sub, viewerStage(identity), body);
-  if (!scene) {
-    return Response.json(
-      { error: "not_found" },
-      { status: 404, headers: privateHeaders },
+  try {
+    const scene = await createScene(
+      id,
+      ctx.viewer.sub,
+      viewerStage(ctx.viewer),
+      body,
     );
+    if (!scene) return json(ctx, { error: "not_found" }, { status: 404 });
+    return json(ctx, { scene }, { status: 201 });
+  } catch (error) {
+    if (error instanceof Error && error.message === "limit_reached") {
+      return json(ctx, { error: "limit_reached" }, { status: 429 });
+    }
+    throw error;
   }
-  return Response.json({ scene }, { status: 201, headers: privateHeaders });
 }

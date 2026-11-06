@@ -45,7 +45,11 @@ export function StoryboardOverview() {
         body: JSON.stringify({ title: "Neues Storyboard" }),
       });
       if (!res.ok) {
-        setError("Storyboard konnte nicht erstellt werden.");
+        setError(
+          res.status === 429
+            ? "Limit erreicht — bitte bestehende Storyboards löschen."
+            : "Storyboard konnte nicht erstellt werden.",
+        );
         return;
       }
       const data = (await res.json()) as { storyboard: StoryboardSummary };

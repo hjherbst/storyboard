@@ -159,8 +159,10 @@ export function StoryboardEditor({ storyboardId }: Props) {
     if (!res.ok) {
       setError(
         res.status === 400
-          ? "Bild ungültig (JPG/PNG/WebP/GIF, max. 4 MB)."
-          : "Bild-Upload fehlgeschlagen.",
+          ? "Bild ungültig (JPG/PNG/WebP/GIF, max. 2 MB)."
+          : res.status === 429
+            ? "Bild-Limit erreicht."
+            : "Bild-Upload fehlgeschlagen.",
       );
       return;
     }

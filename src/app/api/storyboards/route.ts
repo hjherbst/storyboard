@@ -1,30 +1,41 @@
-import { privateHeaders, requireViewer, viewerStage } from "@/lib/auth";
+import { json, viewerStage, withViewer } from "@/lib/api";
 import { createStoryboard, listStoryboards } from "@/lib/storyboards";
 
 export async function GET(request: Request) {
-  const identity = await requireViewer(request);
-  if (identity instanceof Response) return identity;
-
-  const boards = await listStoryboards(identity.sub, viewerStage(identity));
-  return Response.json(
-    { storyboards: boards, viewer: { name: identity.name } },
-    { headers: privateHeaders },
+  const ctx = await withViewer(request);
+  const boards = await listStoryboards(
+    ctx.viewer.sub,
+    viewerStage(ctx.viewer),
   );
+  return json(ctx, {
+    storyboards: boards,
+    viewer: { name: ctx.viewer.name, guest: ctx.viewer.guest },
+  });
 }
 
 export async function POST(request: Request) {
-  const identity = await requireViewer(request);
-  if (identity instanceof Response) return identity;
-
+  const ctx = await withViewer(request);
   const body = (await request.json().catch(() => ({}))) as {
     title?: string;
     summary?: string;
   };
-  const board = await createStoryboard(
-    identity.sub,
-    viewerStage(identity),
-    body.title ?? "Neues Storyboard",
-    body.summary ?? "",
-  );
-  return Response.json({ storyboard: board }, { status: 201, headers: privateHeaders });
+
+  try {
+    const board = await createStoryboard(
+      ctx.viewer.sub,
+      viewerStage(ctx.viewer),
+      body.title ?? "Neues Storyboard",
+      body.summary ?? "",
+    );
+    return json(ctx, { storyboard: board }, { status: 201 });
+  } catch (error) {
+    if (error instanceof Error && error.message === "limit_reached") {
+      return json(
+        ctx,
+        { error: "limit_reached" },
+        { status: 429 },
+      );
+    }
+    throw error;
+  }
 }

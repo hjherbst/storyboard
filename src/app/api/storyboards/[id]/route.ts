@@ -1,4 +1,4 @@
-import { privateHeaders, requireViewer, viewerStage } from "@/lib/auth";
+import { empty, json, viewerStage, withViewer } from "@/lib/api";
 import {
   deleteStoryboard,
   getStoryboardOwned,
@@ -8,59 +8,42 @@ import {
 type Params = { params: Promise<{ id: string }> };
 
 export async function GET(request: Request, { params }: Params) {
-  const identity = await requireViewer(request);
-  if (identity instanceof Response) return identity;
+  const ctx = await withViewer(request);
   const { id } = await params;
-
   const board = await getStoryboardOwned(
     id,
-    identity.sub,
-    viewerStage(identity),
+    ctx.viewer.sub,
+    viewerStage(ctx.viewer),
   );
-  if (!board) {
-    return Response.json(
-      { error: "not_found" },
-      { status: 404, headers: privateHeaders },
-    );
-  }
-  return Response.json({ storyboard: board }, { headers: privateHeaders });
+  if (!board) return json(ctx, { error: "not_found" }, { status: 404 });
+  return json(ctx, { storyboard: board });
 }
 
 export async function PATCH(request: Request, { params }: Params) {
-  const identity = await requireViewer(request);
-  if (identity instanceof Response) return identity;
+  const ctx = await withViewer(request);
   const { id } = await params;
   const body = (await request.json().catch(() => ({}))) as {
     title?: string;
     summary?: string;
   };
-
   const board = await updateStoryboard(
     id,
-    identity.sub,
-    viewerStage(identity),
+    ctx.viewer.sub,
+    viewerStage(ctx.viewer),
     body,
   );
-  if (!board) {
-    return Response.json(
-      { error: "not_found" },
-      { status: 404, headers: privateHeaders },
-    );
-  }
-  return Response.json({ storyboard: board }, { headers: privateHeaders });
+  if (!board) return json(ctx, { error: "not_found" }, { status: 404 });
+  return json(ctx, { storyboard: board });
 }
 
 export async function DELETE(request: Request, { params }: Params) {
-  const identity = await requireViewer(request);
-  if (identity instanceof Response) return identity;
+  const ctx = await withViewer(request);
   const { id } = await params;
-
-  const ok = await deleteStoryboard(id, identity.sub, viewerStage(identity));
-  if (!ok) {
-    return Response.json(
-      { error: "not_found" },
-      { status: 404, headers: privateHeaders },
-    );
-  }
-  return new Response(null, { status: 204, headers: privateHeaders });
+  const ok = await deleteStoryboard(
+    id,
+    ctx.viewer.sub,
+    viewerStage(ctx.viewer),
+  );
+  if (!ok) return json(ctx, { error: "not_found" }, { status: 404 });
+  return empty(ctx);
 }

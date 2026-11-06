@@ -63,12 +63,24 @@ export async function listStoryboards(
   }));
 }
 
+const MAX_STORYBOARDS_PER_OWNER = 40;
+const MAX_SCENES_PER_BOARD = 60;
+const MAX_IMAGES_PER_OWNER = 120;
+
 export async function createStoryboard(
   ownerId: string,
   stage: string,
   title: string,
   summary = "",
 ): Promise<StoryboardSummary> {
+  const counts = await sql<{ count: string | number }>(
+    `select count(*)::int as count from storyboards where owner_id = $1 and stage = $2`,
+    [ownerId, stage],
+  );
+  if (toNumber(counts[0]?.count) >= MAX_STORYBOARDS_PER_OWNER) {
+    throw new Error("limit_reached");
+  }
+
   const rows = await sql<{
     id: string;
     title: string;
@@ -208,6 +220,9 @@ export async function createScene(
 ): Promise<Scene | null> {
   const owned = await getStoryboardOwned(storyboardId, ownerId, stage);
   if (!owned) return null;
+  if (owned.scenes.length >= MAX_SCENES_PER_BOARD) {
+    throw new Error("limit_reached");
+  }
 
   const nextPosition =
     owned.scenes.length === 0
@@ -321,7 +336,21 @@ export async function saveSceneImage(
 ): Promise<Scene | null> {
   const owned = await getStoryboardOwned(storyboardId, ownerId, stage);
   if (!owned) return null;
-  if (!owned.scenes.some((scene) => scene.id === sceneId)) return null;
+  const target = owned.scenes.find((scene) => scene.id === sceneId);
+  if (!target) return null;
+
+  if (!target.hasImage) {
+    const imageCounts = await sql<{ count: string | number }>(
+      `select count(*)::int as count
+       from scenes c
+       join storyboards s on s.id = c.storyboard_id
+       where s.owner_id = $1 and s.stage = $2 and c.image_bytes is not null`,
+      [ownerId, stage],
+    );
+    if (toNumber(imageCounts[0]?.count) >= MAX_IMAGES_PER_OWNER) {
+      throw new Error("limit_reached");
+    }
+  }
 
   const rows = await sql<SceneRow>(
     `update scenes
