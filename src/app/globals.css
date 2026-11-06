@@ -96,6 +96,18 @@ textarea {
   margin-bottom: 1.5rem;
 }
 
+.site-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.85rem 1rem 1.4rem;
+  color: color-mix(in oklab, var(--ink-soft) 88%, transparent);
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
 .brand-mark {
   font-family: var(--font-display);
   font-size: clamp(1.6rem, 3vw, 2rem);

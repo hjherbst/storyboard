@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Figtree, Syne } from "next/font/google";
+import { SiteFooter } from "@/components/SiteFooter";
 import "./globals.css";
 
 const syne = Syne({
@@ -26,7 +27,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="de"
       className={`${syne.variable} ${figtree.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <div className="flex-1">{children}</div>
+        <SiteFooter />
+      </body>
     </html>
   );
 }
