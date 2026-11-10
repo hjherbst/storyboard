@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read plugin version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          TAG_VERSION="${TAG#v}"
+          HEADER_VERSION="$(grep -E '^ \* Version:' storyboards.php | head -1 | sed -E 's/.*Version:[[:space:]]*//')"
+          STABLE_VERSION="$(grep -E '^Stable tag:' readme.txt | head -1 | sed -E 's/Stable tag:[[:space:]]*//')"
+
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "tag_version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "header_version=${HEADER_VERSION}" >> "$GITHUB_OUTPUT"
+
+          if [ "$TAG_VERSION" != "$HEADER_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) must match storyboards.php Version header ($HEADER_VERSION)"
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$STABLE_VERSION" ]; then
+            echo "::error::Tag version ($TAG_VERSION) must match readme.txt Stable tag ($STABLE_VERSION)"
+            exit 1
+          fi
+
+      - name: Build plugin zip
+        run: |
+          STAGE="build/storyboards"
+          mkdir -p "$STAGE"
+          rsync -a \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'build' \
+            --exclude '.gitignore' \
+            --exclude '.DS_Store' \
+            ./ "$STAGE/"
+          mkdir -p dist
+          (cd build && zip -r "../dist/storyboards.zip" storyboards)
+          ls -lh dist/storyboards.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Storyboards ${{ steps.version.outputs.tag_version }}
+          generate_release_notes: true
+          files: dist/storyboards.zip
+          fail_on_unmatched_files: true

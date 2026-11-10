@@ -1,0 +1,10 @@
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/
+build/
+dist/
+node_modules/
+vendor/
+!lib/plugin-update-checker/vendor/
