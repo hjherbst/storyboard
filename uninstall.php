@@ -33,6 +33,8 @@ foreach ( $boards as $board_id ) {
 
 delete_option( 'storyboards_db_version' );
 delete_option( 'storyboards_license_key' );
+delete_option( 'storyboards_public_viewing' ); // legacy
+delete_option( 'storyboards_rewrite_version' );
 
 $role = get_role( 'administrator' );
 if ( $role ) {

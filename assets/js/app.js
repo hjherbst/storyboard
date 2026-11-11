@@ -4,6 +4,8 @@ import { compressImage } from './compress.js';
 const cfg = window.StoryboardsConfig;
 const t = cfg.i18n;
 const root = document.getElementById('sb-root');
+const canManage = !!cfg.canManage;
+const readOnly = !canManage;
 
 const state = {
   view: 'boards', // boards | board
@@ -22,6 +24,7 @@ const state = {
   loading: false,
   toastTimer: null,
   sheetHistoryPushed: false,
+  mediaFrame: null,
 };
 
 function esc(str) {
@@ -116,6 +119,7 @@ function applyBoardData(data, { resetUi = true } = {}) {
     slug: data.slug || '',
     url: data.url || boardUrl(data.slug),
     aspect_ratio: data.aspect_ratio,
+    is_public: !!data.is_public,
   };
   state.scenes = data.scenes || [];
   if (resetUi) {
@@ -192,7 +196,7 @@ function render() {
   }
 
   bindEvents();
-  if (state.view === 'board' && state.mode === 'list') {
+  if (canManage && state.view === 'board' && state.mode === 'list') {
     initSortable();
   }
 }
@@ -222,7 +226,8 @@ function renderBoardsView() {
     )
     .join('');
 
-  const addTile = `
+  const addTile = canManage
+    ? `
     <button type="button" class="sb-board-tile sb-board-add" data-action="new-board">
       <div class="sb-board-frame is-169" aria-hidden="true">
         <span class="sb-frame-placeholder sb-frame-add-icon">
@@ -234,13 +239,15 @@ function renderBoardsView() {
       <div class="sb-board-meta">
         <strong>${esc(t.newBoard)}</strong>
       </div>
-    </button>`;
+    </button>`
+    : '';
 
   const list = `<div class="sb-board-list">${boards}${addTile}</div>`;
 
   return `
     <header class="sb-header">
       <h1>${esc(t.appTitle)}</h1>
+      ${readOnly ? `<span class="sb-view-only">${esc(t.viewOnly)}</span>` : ''}
     </header>
     <main class="sb-main">${state.loading ? `<p class="sb-loading">…</p>` : list}</main>
   `;
@@ -256,11 +263,28 @@ function renderBoardView() {
   const body =
     state.mode === 'timeline' ? renderTimeline() : renderSceneList();
 
+  const headerActions = canManage
+    ? `<div class="sb-header-actions">
+        <button
+          type="button"
+          class="sb-public-toggle ${board.is_public ? 'is-on' : ''}"
+          data-action="toggle-public"
+          role="switch"
+          aria-checked="${board.is_public ? 'true' : 'false'}"
+          title="${esc(board.is_public ? t.publicHint : t.makePublic)}"
+        >
+          <span class="sb-public-toggle-label">${esc(t.publicBoard)}</span>
+          <span class="sb-public-toggle-track" aria-hidden="true"><span class="sb-public-toggle-thumb"></span></span>
+        </button>
+        <button type="button" class="sb-header-delete" data-action="delete-board" data-id="${board.id}">${esc(t.delete)}</button>
+      </div>`
+    : `<span class="sb-view-only">${esc(t.viewOnly)}</span>`;
+
   return `
     <header class="sb-header">
-      <button type="button" class="sb-icon-btn" data-action="back" aria-label="${esc(t.back)}">←</button>
+      ${canManage ? `<button type="button" class="sb-icon-btn" data-action="back" aria-label="${esc(t.back)}">←</button>` : '<span></span>'}
       <h1>${esc(board.title)}</h1>
-      <button type="button" class="sb-header-delete" data-action="delete-board" data-id="${board.id}">${esc(t.delete)}</button>
+      ${headerActions}
     </header>
     <main class="sb-main">
       <div class="sb-detail-meta">
@@ -282,8 +306,8 @@ function renderSceneList() {
     .map((s) => {
       return `
       <li class="sb-scene-card" data-id="${s.id}">
-        <div class="sb-scene-handle" aria-label="Reorder">⠿</div>
-        <button type="button" class="sb-scene-tile" data-action="edit-scene" data-id="${s.id}">
+        ${canManage ? `<div class="sb-scene-handle" aria-label="Reorder">⠿</div>` : ''}
+        <button type="button" class="sb-scene-tile" data-action="${canManage ? 'edit-scene' : 'view-scene'}" data-id="${s.id}">
           <div class="sb-frame ${aspectClass(aspect)}">
             ${
               s.image_url
@@ -304,7 +328,8 @@ function renderSceneList() {
     })
     .join('');
 
-  const addTile = `
+  const addTile = canManage
+    ? `
     <li class="sb-scene-card sb-scene-add">
       <button type="button" class="sb-scene-tile" data-action="add-scene">
         <div class="sb-frame ${aspectClass(aspect)}">
@@ -318,9 +343,10 @@ function renderSceneList() {
           <h4>${esc(t.addScene)}</h4>
         </div>
       </button>
-    </li>`;
+    </li>`
+    : '';
 
-  return `<ul class="sb-scene-list ${aspectClass(aspect)}" id="sb-sortable">${cards}${addTile}</ul>`;
+  return `<ul class="sb-scene-list ${aspectClass(aspect)}" ${canManage ? 'id="sb-sortable"' : ''}>${cards}${addTile}</ul>`;
 }
 
 function renderTimeline() {
@@ -358,7 +384,7 @@ function renderTimeline() {
           <div class="sb-clip ${esc(s.role)} ${s.isDefault ? 'is-default' : ''}"
                style="left:${s.start * pxPerSec}px;width:${Math.max(s.dur * pxPerSec - 4, 28)}px"
                title="${esc(s.title)} (${s.dur}s)"
-               data-action="edit-scene" data-id="${s.id}">
+               data-action="${canManage ? 'edit-scene' : 'view-scene'}" data-id="${s.id}">
             ${esc(s.title)}
           </div>`
         )
@@ -375,7 +401,7 @@ function renderTimeline() {
     <div class="sb-timeline-wrap">
       <div class="sb-timeline">${lanesHtml}</div>
     </div>
-    <p class="sb-premium-hint" style="margin-top:12px">* ${esc(t.defaultDuration)} = 3s display fallback</p>
+    ${canManage ? `<p class="sb-premium-hint" style="margin-top:12px">* ${esc(t.defaultDuration)} = 3s display fallback</p>` : ''}
   `;
 }
 
@@ -492,20 +518,55 @@ function renderSceneSheet() {
   const posLabel = (t.scenePosition || '%1$d / %2$d')
     .replace('%1$d', String(index + 1))
     .replace('%2$d', String(total));
+  const navHtml = hasNav
+    ? `<div class="sb-scene-nav" aria-label="${esc(t.swipeScenes)}">
+        <button type="button" class="sb-icon-btn" data-action="prev-scene" aria-label="${esc(t.previousScene)}" ${index <= 0 ? 'disabled' : ''}>‹</button>
+        <span class="sb-scene-pos">${esc(posLabel)}</span>
+        <button type="button" class="sb-icon-btn" data-action="next-scene" aria-label="${esc(t.nextScene)}" ${index >= total - 1 ? 'disabled' : ''}>›</button>
+      </div>`
+    : '<span></span>';
+
+  if (readOnly) {
+    return `
+      <div class="sb-overlay" role="dialog" aria-modal="true">
+        <div class="sb-sheet sb-sheet-scene" data-stop>
+          <div class="sb-sheet-top">
+            ${navHtml}
+            <button type="button" class="sb-sheet-close sb-icon-btn" data-action="close-sheet" aria-label="${esc(t.close)}">✕</button>
+          </div>
+          <div class="sb-sheet-confirm-body">
+            <div class="sb-sheet-heading">
+              <h2 class="sb-scene-title-input" style="font-size:var(--wp--preset--font-size--x-large,1.75rem);font-weight:600;margin:0;">${esc(scene.title || scene.title_raw || '')}</h2>
+            </div>
+            <div class="sb-field sb-field-photo">
+              <div class="sb-photo-area">
+                <div class="sb-photo-preview ${aspectClass(aspect)}${previewUrl ? ' has-image' : ''}">
+                  ${previewUrl ? `<img src="${esc(previewUrl)}" alt="">` : '<span class="sb-photo-empty" aria-hidden="true"></span>'}
+                </div>
+              </div>
+            </div>
+            <p class="sb-view-meta">${esc(roleLabel(scene.role))} · ${esc(String(scene.duration_sec || 3))}s</p>
+            ${
+              scene.description
+                ? `<div class="sb-field"><label>${esc(t.description)}</label><p class="sb-view-text">${esc(scene.description)}</p></div>`
+                : ''
+            }
+            ${
+              scene.script
+                ? `<div class="sb-field"><label>${esc(t.script)}</label><p class="sb-view-text">${esc(scene.script)}</p></div>`
+                : ''
+            }
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
   return `
     <div class="sb-overlay" role="dialog" aria-modal="true">
       <div class="sb-sheet sb-sheet-scene" data-stop>
         <div class="sb-sheet-top">
-          ${
-            hasNav
-              ? `<div class="sb-scene-nav" aria-label="${esc(t.swipeScenes)}">
-                  <button type="button" class="sb-icon-btn" data-action="prev-scene" aria-label="${esc(t.previousScene)}" ${index <= 0 ? 'disabled' : ''}>‹</button>
-                  <span class="sb-scene-pos">${esc(posLabel)}</span>
-                  <button type="button" class="sb-icon-btn" data-action="next-scene" aria-label="${esc(t.nextScene)}" ${index >= total - 1 ? 'disabled' : ''}>›</button>
-                </div>`
-              : '<span></span>'
-          }
+          ${navHtml}
           <button type="button" class="sb-sheet-close sb-icon-btn" data-action="close-sheet" aria-label="${esc(t.close)}">✕</button>
         </div>
         <form id="sb-scene-form">
@@ -534,8 +595,23 @@ function renderSceneSheet() {
                       <circle cx="8.5" cy="10" r="1.5"/>
                       <path d="M21 16l-5.5-5.5L7 19"/>
                     </svg>
-                    <input type="file" id="sb-photo-input" accept="image/*" hidden>
+                    <input type="file" id="sb-photo-input" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" hidden>
                   </label>
+                  <label class="sb-icon-btn sb-photo-action sb-photo-action-camera" aria-label="${esc(t.takePhoto)}" title="${esc(t.takePhoto)}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/>
+                      <circle cx="12" cy="13.5" r="3.25"/>
+                    </svg>
+                    <input type="file" id="sb-photo-camera" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" capture="environment" hidden>
+                  </label>
+                  <button type="button" class="sb-icon-btn sb-photo-action" data-action="pick-media" aria-label="${esc(t.chooseFromLibrary)}" title="${esc(t.chooseFromLibrary)}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <rect x="3" y="4" width="7" height="7" rx="1"/>
+                      <rect x="14" y="4" width="7" height="7" rx="1"/>
+                      <rect x="3" y="13" width="7" height="7" rx="1"/>
+                      <rect x="14" y="13" width="7" height="7" rx="1"/>
+                    </svg>
+                  </button>
                   ${
                     previewUrl
                       ? `<button type="button" class="sb-icon-btn sb-photo-action" data-action="remove-photo" aria-label="${esc(t.removePhoto)}" title="${esc(t.removePhoto)}">
@@ -661,6 +737,7 @@ function syncFormsIntoState() {
 }
 
 function isSheetDirty() {
+  if (readOnly) return false;
   syncFormsIntoState();
   if (state.sheet === 'newBoard') {
     return boardSnapshot(state.boardDraft) !== state.boardBaseline;
@@ -844,6 +921,10 @@ function bindEvents() {
     if (photoInput) {
       photoInput.addEventListener('change', onPhotoSelected);
     }
+    const cameraInput = root.querySelector('#sb-photo-camera');
+    if (cameraInput) {
+      cameraInput.addEventListener('change', onPhotoSelected);
+    }
   }
 
   const deleteCodeInput = root.querySelector('#sb-delete-code-input');
@@ -905,10 +986,66 @@ async function onActionClick(e) {
   const el = e.currentTarget;
   const action = el.dataset.action;
 
+  const manageOnly = new Set([
+    'new-board',
+    'delete-board',
+    'add-scene',
+    'edit-scene',
+    'delete-scene',
+    'remove-photo',
+    'pick-media',
+    'toggle-public',
+    'ai-desc',
+    'ai-script',
+    'ai-image',
+  ]);
+  if (readOnly && manageOnly.has(action)) {
+    return;
+  }
+
   if (action === 'new-board') {
     state.boardDraft = { title: '', aspect_ratio: '16:9' };
     state.boardBaseline = boardSnapshot(state.boardDraft);
     openSheet('newBoard');
+    return;
+  }
+
+  if (action === 'toggle-public') {
+    if (!state.board?.id) return;
+    try {
+      const next = !state.board.is_public;
+      const updated = await api.updateBoard(state.board.id, { is_public: next });
+      state.board = {
+        ...state.board,
+        is_public: !!updated.is_public,
+        slug: updated.slug || state.board.slug,
+        url: updated.url || state.board.url,
+      };
+      render();
+      if (next) {
+        const url = state.board.url || boardUrl(state.board.slug);
+        try {
+          if (url) await navigator.clipboard.writeText(url);
+          showToast(t.linkCopied);
+        } catch {
+          showToast(t.publicHint);
+        }
+      }
+    } catch (err) {
+      showToast(err.message || t.errorGeneric);
+    }
+    return;
+  }
+
+  if (action === 'copy-board-link') {
+    const url = state.board?.url || boardUrl(state.board?.slug);
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast(t.linkCopied);
+    } catch {
+      showToast(url);
+    }
     return;
   }
 
@@ -979,10 +1116,8 @@ async function onActionClick(e) {
       closeSheet();
       return;
     }
-    if (history.state?.storyboardsView === 'board' || parseBoardSlugFromLocation()) {
-      history.back();
-      return;
-    }
+    // In-app back always returns to the boards overview (not browser history),
+    // so deep-linked board URLs don't leave the Storyboards app.
     await goToBoards();
     return;
   }
@@ -1003,7 +1138,7 @@ async function onActionClick(e) {
     return;
   }
 
-  if (action === 'edit-scene') {
+  if (action === 'edit-scene' || action === 'view-scene') {
     const id = Number(el.dataset.id);
     const scene = state.scenes.find((s) => s.id === id);
     if (!scene) return;
@@ -1055,6 +1190,12 @@ async function onActionClick(e) {
     return;
   }
 
+  if (action === 'pick-media') {
+    e.preventDefault();
+    openWpMediaLibrary();
+    return;
+  }
+
   if (action === 'ai-desc' || action === 'ai-script' || action === 'ai-image') {
     showToast(cfg.features?.premium_hint || 'Premium — coming soon');
   }
@@ -1080,9 +1221,34 @@ async function onCreateBoard(e) {
   }
 }
 
-async function onPhotoSelected(e) {
-  const file = e.target.files?.[0];
+function isAllowedImageFile(file) {
+  if (!file) return false;
+  const type = String(file.type || '').toLowerCase();
+  const name = String(file.name || '').toLowerCase();
+
+  if (type.startsWith('video/') || /\.(mp4|mov|m4v|webm|avi|mkv|mpeg|mpg|3gp)$/i.test(name)) {
+    return false;
+  }
+
+  if (type && ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(type)) {
+    return true;
+  }
+
+  // Some devices omit MIME — allow by extension only for still photos.
+  if (!type && /\.(jpe?g|png|webp)$/i.test(name)) {
+    return true;
+  }
+
+  return ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(type);
+}
+
+async function applyPhotoFile(file) {
   if (!file) return;
+
+  if (!isAllowedImageFile(file)) {
+    showToast(t.imagesOnly || t.errorGeneric);
+    return;
+  }
 
   syncFormsIntoState();
 
@@ -1100,6 +1266,79 @@ async function onPhotoSelected(e) {
   } catch (err) {
     showToast(err.message || t.errorGeneric);
   }
+}
+
+async function onPhotoSelected(e) {
+  const input = e.target;
+  const file = input.files?.[0];
+  if (!file) return;
+  await applyPhotoFile(file);
+  input.value = '';
+}
+
+function openWpMediaLibrary() {
+  if (!window.wp?.media) {
+    showToast(t.mediaLibraryUnavailable || t.errorGeneric);
+    return;
+  }
+
+  syncFormsIntoState();
+
+  if (!state.mediaFrame) {
+    state.mediaFrame = window.wp.media({
+      title: t.mediaLibraryTitle || t.chooseFromLibrary,
+      button: { text: t.useSelectedPhoto || t.save },
+      library: { type: 'image' },
+      multiple: false,
+    });
+
+    state.mediaFrame.on('uploader:ready', () => {
+      const uploader = state.mediaFrame?.uploader?.uploader;
+      if (!uploader?.setOption) return;
+      uploader.setOption('filters', {
+        mime_types: [{ title: 'Images', extensions: 'jpg,jpeg,png,webp' }],
+      });
+      uploader.setOption('multi_selection', false);
+    });
+
+    state.mediaFrame.on('select', async () => {
+      const attachment = state.mediaFrame.state().get('selection').first()?.toJSON();
+      if (!attachment) return;
+
+      const mime = String(attachment.mime || attachment.type || '').toLowerCase();
+      if (mime.startsWith('video/') || (mime && !mime.startsWith('image/'))) {
+        showToast(t.imagesOnly || t.errorGeneric);
+        return;
+      }
+
+      const url =
+        attachment.sizes?.large?.url ||
+        attachment.sizes?.full?.url ||
+        attachment.url;
+      if (!url) {
+        showToast(t.errorGeneric);
+        return;
+      }
+
+      try {
+        showToast(t.compressing);
+        const res = await fetch(url, { credentials: 'same-origin' });
+        if (!res.ok) throw new Error(t.errorGeneric);
+        const blob = await res.blob();
+        if (String(blob.type || '').toLowerCase().startsWith('video/')) {
+          showToast(t.imagesOnly || t.errorGeneric);
+          return;
+        }
+        const name = attachment.filename || attachment.name || 'library.jpg';
+        const file = new File([blob], name, { type: blob.type || 'image/jpeg' });
+        await applyPhotoFile(file);
+      } catch (err) {
+        showToast(err.message || t.errorGeneric);
+      }
+    });
+  }
+
+  state.mediaFrame.open();
 }
 
 async function persistEditingScene() {
@@ -1259,16 +1498,23 @@ async function openBoardBySlug(slug, { push = false } = {}) {
     }
   } catch (err) {
     showToast(err.message || t.errorGeneric);
-    state.view = 'boards';
-    state.board = null;
-    state.scenes = [];
-    state.mode = 'list';
-    setDocumentTitle('');
-    navigateBoardsUrl({ replace: true });
-    try {
-      state.boards = await api.listBoards();
-    } catch {
-      state.boards = [];
+    if (readOnly) {
+      state.view = 'board';
+      state.board = null;
+      state.scenes = [];
+      setDocumentTitle('');
+    } else {
+      state.view = 'boards';
+      state.board = null;
+      state.scenes = [];
+      state.mode = 'list';
+      setDocumentTitle('');
+      navigateBoardsUrl({ replace: true });
+      try {
+        state.boards = await api.listBoards();
+      } catch {
+        state.boards = [];
+      }
     }
   } finally {
     state.loading = false;

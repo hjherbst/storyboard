@@ -86,6 +86,78 @@
   background: none;
 }
 
+.sb-view-only {
+  color: var(--sb-muted);
+  font-size: var(--wp--preset--font-size--small, 0.875rem);
+  white-space: nowrap;
+}
+
+.sb-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.sb-public-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--sb-muted);
+  font: inherit;
+  font-size: var(--wp--preset--font-size--small, 0.875rem);
+  cursor: pointer;
+}
+
+.sb-public-toggle.is-on {
+  color: var(--sb-text);
+}
+
+.sb-public-toggle-track {
+  position: relative;
+  width: 1.85rem;
+  height: 1.05rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--sb-text) 18%, transparent);
+  flex-shrink: 0;
+}
+
+.sb-public-toggle.is-on .sb-public-toggle-track {
+  background: var(--sb-text);
+}
+
+.sb-public-toggle-thumb {
+  position: absolute;
+  top: 0.12rem;
+  left: 0.12rem;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  background: var(--sb-bg);
+  transition: transform 0.15s ease;
+}
+
+.sb-public-toggle.is-on .sb-public-toggle-thumb {
+  transform: translateX(0.8rem);
+}
+
+.sb-view-meta {
+  margin: 0 0 0.85rem;
+  color: var(--sb-muted);
+  font-size: var(--wp--preset--font-size--small, 0.875rem);
+}
+
+.sb-view-text {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: var(--wp--preset--font-size--small, 0.875rem);
+}
+
 .sb-header {
   position: sticky;
   top: 0;
@@ -770,6 +842,26 @@
 
 .sb-photo-action[data-action="remove-photo"] {
   color: var(--sb-danger);
+}
+
+/* Camera shortcut is mainly useful on phones/tablets. */
+.sb-photo-action-camera {
+  display: none;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .sb-photo-action-camera {
+    display: inline-flex;
+  }
+}
+
+/* Keep WP media modal above the storyboard sheet. */
+.media-modal {
+  z-index: 100100 !important;
+}
+
+.media-modal-backdrop {
+  z-index: 100099 !important;
 }
 
 .sb-btn {

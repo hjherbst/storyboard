@@ -52,6 +52,12 @@ $i18n = array(
 	'addPhoto'                   => __( 'Add photo', 'storyboards' ),
 	'changePhoto'                => __( 'Change photo', 'storyboards' ),
 	'removePhoto'                => __( 'Remove photo', 'storyboards' ),
+	'takePhoto'                  => __( 'Take photo', 'storyboards' ),
+	'chooseFromLibrary'          => __( 'Media library', 'storyboards' ),
+	'mediaLibraryTitle'          => __( 'Choose scene photo', 'storyboards' ),
+	'useSelectedPhoto'           => __( 'Use photo', 'storyboards' ),
+	'mediaLibraryUnavailable'    => __( 'Media library is not available.', 'storyboards' ),
+	'imagesOnly'                 => __( 'Only photos are allowed (JPEG, PNG, or WebP). Videos cannot be uploaded.', 'storyboards' ),
 	'generateDesc'               => __( 'Generate description', 'storyboards' ),
 	'generateScript'             => __( 'Generate script', 'storyboards' ),
 	'generateImage'              => __( 'Generate image', 'storyboards' ),
@@ -72,6 +78,13 @@ $i18n = array(
 	'scenePosition'              => __( '%1$d / %2$d', 'storyboards' ),
 	'swipeScenes'                => __( 'Swipe for previous or next scene', 'storyboards' ),
 	'saving'                     => __( 'Saving…', 'storyboards' ),
+	'publicBoard'                => __( 'Public link', 'storyboards' ),
+	'makePublic'                 => __( 'Make public', 'storyboards' ),
+	'makePrivate'                => __( 'Make private', 'storyboards' ),
+	'publicHint'                 => __( 'Anyone with the link can view this board (read-only).', 'storyboards' ),
+	'copyLink'                   => __( 'Copy link', 'storyboards' ),
+	'linkCopied'                 => __( 'Link copied', 'storyboards' ),
+	'viewOnly'                   => __( 'View only', 'storyboards' ),
 );
 
 ?><!DOCTYPE html>
@@ -95,13 +108,14 @@ $i18n = array(
 		window.StoryboardsConfig = <?php
 		echo wp_json_encode(
 			array(
-				'restUrl'           => $rest_url,
-				'nonce'             => $nonce,
-				'homeUrl'           => home_url( '/' ),
-				'appBase'           => Storyboards_Rewrite::app_url(),
-				'initialBoardSlug'  => Storyboards_Rewrite::requested_board_slug(),
-				'features'          => $features,
-				'i18n'              => $i18n,
+				'restUrl'               => $rest_url,
+				'nonce'                 => $nonce,
+				'homeUrl'               => home_url( '/' ),
+				'appBase'               => Storyboards_Rewrite::app_url(),
+				'initialBoardSlug'      => Storyboards_Rewrite::requested_board_slug(),
+				'canManage'             => Storyboards_Rewrite::can_manage(),
+				'features'              => $features,
+				'i18n'                  => $i18n,
 			)
 		);
 		?>;

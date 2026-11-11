@@ -15,6 +15,7 @@ final class Storyboards_CPT {
 
 	public const POST_TYPE     = 'storyboard';
 	public const META_ASPECT   = 'aspect_ratio';
+	public const META_PUBLIC   = 'is_public';
 	public const ASPECT_VALUES = array( '16:9', '9:16' );
 
 	/**
@@ -65,6 +66,30 @@ final class Storyboards_CPT {
 				'default'           => '16:9',
 			)
 		);
+
+		register_post_meta(
+			self::POST_TYPE,
+			self::META_PUBLIC,
+			array(
+				'type'              => 'boolean',
+				'single'            => true,
+				'sanitize_callback' => static function ( $value ): bool {
+					return (bool) $value;
+				},
+				'auth_callback'     => static function (): bool {
+					return current_user_can( 'manage_storyboards' );
+				},
+				'show_in_rest'      => false,
+				'default'           => false,
+			)
+		);
+	}
+
+	/**
+	 * Whether a board is marked public.
+	 */
+	public static function is_board_public( int $post_id ): bool {
+		return (bool) get_post_meta( $post_id, self::META_PUBLIC, true );
 	}
 
 	/**

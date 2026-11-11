@@ -36,7 +36,7 @@ final class Storyboards_REST {
 				array(
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => array( $this, 'list_boards' ),
-					'permission_callback' => array( $this, 'can_manage' ),
+					'permission_callback' => array( $this, 'can_read_boards' ),
 				),
 				array(
 					'methods'             => WP_REST_Server::CREATABLE,
@@ -65,7 +65,7 @@ final class Storyboards_REST {
 			array(
 				'methods'             => WP_REST_Server::READABLE,
 				'callback'            => array( $this, 'get_board_by_slug' ),
-				'permission_callback' => array( $this, 'can_manage' ),
+				'permission_callback' => array( $this, 'can_read_board_request' ),
 				'args'                => array(
 					'slug' => array(
 						'required'          => true,
@@ -83,7 +83,7 @@ final class Storyboards_REST {
 				array(
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => array( $this, 'get_board' ),
-					'permission_callback' => array( $this, 'can_manage' ),
+					'permission_callback' => array( $this, 'can_read_board_request' ),
 				),
 				array(
 					'methods'             => 'PATCH',
@@ -105,7 +105,7 @@ final class Storyboards_REST {
 				array(
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => array( $this, 'list_scenes' ),
-					'permission_callback' => array( $this, 'can_manage' ),
+					'permission_callback' => array( $this, 'can_read_board_request' ),
 				),
 				array(
 					'methods'             => WP_REST_Server::CREATABLE,
@@ -154,10 +154,31 @@ final class Storyboards_REST {
 	}
 
 	/**
-	 * Permission check.
+	 * Permission check for editors.
 	 */
 	public function can_manage(): bool {
 		return current_user_can( 'manage_storyboards' );
+	}
+
+	/**
+	 * List boards: managers see all; public mode is unused for overview.
+	 */
+	public function can_read_boards(): bool {
+		return $this->can_manage();
+	}
+
+	/**
+	 * Read a single board / its scenes when managing or when the board is public.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public function can_read_board_request( WP_REST_Request $request ): bool {
+		if ( $this->can_manage() ) {
+			return true;
+		}
+
+		$board = $this->resolve_board_from_request( $request );
+		return $board instanceof WP_Post && Storyboards_CPT::is_board_public( (int) $board->ID );
 	}
 
 	/**
@@ -233,6 +254,10 @@ final class Storyboards_REST {
 			return $board;
 		}
 
+		if ( ! $this->can_manage() && ! Storyboards_CPT::is_board_public( (int) $board->ID ) ) {
+			return new WP_Error( 'storyboards_not_found', __( 'Storyboard not found.', 'storyboards' ), array( 'status' => 404 ) );
+		}
+
 		$data           = $this->format_board( $board );
 		$data['scenes'] = $this->get_scenes_for_board( (int) $board->ID );
 		return new WP_REST_Response( $data, 200 );
@@ -248,6 +273,10 @@ final class Storyboards_REST {
 		$board = $this->get_board_post_by_slug( $slug );
 		if ( is_wp_error( $board ) ) {
 			return $board;
+		}
+
+		if ( ! $this->can_manage() && ! Storyboards_CPT::is_board_public( (int) $board->ID ) ) {
+			return new WP_Error( 'storyboards_not_found', __( 'Storyboard not found.', 'storyboards' ), array( 'status' => 404 ) );
 		}
 
 		$data           = $this->format_board( $board );
@@ -288,6 +317,10 @@ final class Storyboards_REST {
 
 		if ( isset( $body['aspect_ratio'] ) ) {
 			update_post_meta( (int) $board->ID, Storyboards_CPT::META_ASPECT, Storyboards_CPT::sanitize_aspect( $body['aspect_ratio'] ) );
+		}
+
+		if ( array_key_exists( 'is_public', $body ) ) {
+			update_post_meta( (int) $board->ID, Storyboards_CPT::META_PUBLIC, (bool) $body['is_public'] ? 1 : 0 );
 		}
 
 		$post = get_post( (int) $board->ID );
@@ -593,8 +626,22 @@ final class Storyboards_REST {
 		$check = wp_check_filetype_and_ext( $file['tmp_name'], $file['name'] );
 		$mime  = $check['type'] ?: ( $file['type'] ?? '' );
 		$allowed = array( 'image/webp', 'image/jpeg', 'image/png' );
+
+		// Hard block videos and any non-photo payloads (storyboards are reference stills only).
+		if ( is_string( $mime ) && str_starts_with( $mime, 'video/' ) ) {
+			return new WP_Error(
+				'storyboards_video_not_allowed',
+				__( 'Videos cannot be uploaded to storyboards. Please use a photo (JPEG, PNG, or WebP).', 'storyboards' ),
+				array( 'status' => 400 )
+			);
+		}
+
 		if ( ! in_array( $mime, $allowed, true ) ) {
-			return new WP_Error( 'storyboards_invalid_type', __( 'Only WebP, JPEG, or PNG images are allowed.', 'storyboards' ), array( 'status' => 400 ) );
+			return new WP_Error(
+				'storyboards_invalid_type',
+				__( 'Only JPEG, PNG, or WebP photos are allowed. Videos cannot be uploaded.', 'storyboards' ),
+				array( 'status' => 400 )
+			);
 		}
 
 		require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -795,11 +842,32 @@ final class Storyboards_REST {
 			'slug'               => $slug,
 			'url'                => Storyboards_Rewrite::board_url( $slug ),
 			'aspect_ratio'       => $aspect,
+			'is_public'          => Storyboards_CPT::is_board_public( (int) $post->ID ),
 			'scene_count'        => (int) ( $stats['scene_count'] ?? 0 ),
 			'total_duration_sec' => (int) ( $stats['total_duration_sec'] ?? 0 ),
 			'modified'           => mysql_to_rfc3339( $post->post_modified_gmt ),
 			'created'            => mysql_to_rfc3339( $post->post_date_gmt ),
 		);
+	}
+
+	/**
+	 * Resolve board post from a REST request (board id or slug).
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	private function resolve_board_from_request( WP_REST_Request $request ): ?WP_Post {
+		if ( ! empty( $request['slug'] ) ) {
+			$board = $this->get_board_post_by_slug( sanitize_title( (string) $request['slug'] ) );
+			return is_wp_error( $board ) ? null : $board;
+		}
+
+		$route = (string) $request->get_route();
+		if ( isset( $request['id'] ) && str_contains( $route, '/boards/' ) ) {
+			$board = $this->get_board_post( (int) $request['id'] );
+			return is_wp_error( $board ) ? null : $board;
+		}
+
+		return null;
 	}
 
 	/**

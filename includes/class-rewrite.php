@@ -37,6 +37,20 @@ final class Storyboards_Rewrite {
 	}
 
 	/**
+	 * Whether the current visitor may manage storyboards.
+	 */
+	public static function can_manage(): bool {
+		return is_user_logged_in() && current_user_can( 'manage_storyboards' );
+	}
+
+	/**
+	 * Whether the current request is a public read-only app view.
+	 */
+	public static function is_public_view(): bool {
+		return self::is_app() && ! self::can_manage();
+	}
+
+	/**
 	 * Load app CSS on top of the active theme styles.
 	 */
 	public static function enqueue_assets(): void {
@@ -55,6 +69,57 @@ final class Storyboards_Rewrite {
 			STORYBOARDS_URL . 'assets/css/app.css',
 			$deps,
 			STORYBOARDS_VERSION
+		);
+
+		// Media library / uploads only for editors.
+		if ( self::can_manage() && current_user_can( 'upload_files' ) ) {
+			wp_enqueue_media();
+			add_filter( 'plupload_default_settings', array( __CLASS__, 'restrict_plupload_to_images' ) );
+			add_filter( 'upload_mimes', array( __CLASS__, 'restrict_upload_mimes_to_images' ), 20 );
+		}
+	}
+
+	/**
+	 * Limit Plupload filters to still images while the Storyboards app is open.
+	 *
+	 * @param array<string, mixed> $settings Plupload settings.
+	 * @return array<string, mixed>
+	 */
+	public static function restrict_plupload_to_images( array $settings ): array {
+		if ( ! self::is_app() ) {
+			return $settings;
+		}
+
+		if ( ! isset( $settings['filters'] ) || ! is_array( $settings['filters'] ) ) {
+			$settings['filters'] = array();
+		}
+
+		$settings['filters']['mime_types'] = array(
+			array(
+				'title'      => __( 'Images', 'storyboards' ),
+				'extensions' => 'jpg,jpeg,png,webp',
+			),
+		);
+		$settings['multi_selection'] = false;
+
+		return $settings;
+	}
+
+	/**
+	 * Limit upload MIME types to still images on the Storyboards app screen.
+	 *
+	 * @param array<string, string> $mimes Allowed MIME types.
+	 * @return array<string, string>
+	 */
+	public static function restrict_upload_mimes_to_images( array $mimes ): array {
+		if ( ! self::is_app() ) {
+			return $mimes;
+		}
+
+		return array(
+			'jpg|jpeg|jpe' => 'image/jpeg',
+			'png'          => 'image/png',
+			'webp'         => 'image/webp',
 		);
 	}
 
@@ -133,17 +198,41 @@ final class Storyboards_Rewrite {
 			return;
 		}
 
-		if ( ! is_user_logged_in() ) {
-			auth_redirect();
-			exit;
-		}
+		$can_manage = self::can_manage();
 
-		if ( ! current_user_can( 'manage_storyboards' ) ) {
-			wp_die(
-				esc_html__( 'You do not have permission to manage storyboards.', 'storyboards' ),
-				esc_html__( 'Forbidden', 'storyboards' ),
-				array( 'response' => 403 )
+		if ( ! $can_manage ) {
+			// Visitors may only open a concrete public board URL, not the overview.
+			$slug = self::requested_board_slug();
+			if ( '' === $slug ) {
+				if ( ! is_user_logged_in() ) {
+					auth_redirect();
+					exit;
+				}
+
+				wp_die(
+					esc_html__( 'You do not have permission to manage storyboards.', 'storyboards' ),
+					esc_html__( 'Forbidden', 'storyboards' ),
+					array( 'response' => 403 )
+				);
+			}
+
+			$found = get_posts(
+				array(
+					'name'             => $slug,
+					'post_type'        => Storyboards_CPT::POST_TYPE,
+					'post_status'      => array( 'private', 'publish' ),
+					'posts_per_page'   => 1,
+					'suppress_filters' => true,
+				)
 			);
+			$board = $found[0] ?? null;
+			if ( ! ( $board instanceof WP_Post ) || ! Storyboards_CPT::is_board_public( (int) $board->ID ) ) {
+				wp_die(
+					esc_html__( 'This storyboard is not available.', 'storyboards' ),
+					esc_html__( 'Not found', 'storyboards' ),
+					array( 'response' => 404 )
+				);
+			}
 		}
 
 		status_header( 200 );

@@ -4,7 +4,7 @@ Tags: storyboard, video, shotlist, production
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.0.21
+Stable tag: 1.0.27
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -44,6 +44,24 @@ Future integration notes:
 Updates are delivered from GitHub Releases (https://github.com/hjherbst/storyboard/releases).
 
 == Changelog ==
+
+= 1.0.27 =
+* Board back button always returns to the boards overview
+
+= 1.0.26 =
+* Remove admin setting; public boards controlled only via frontend toggle
+
+= 1.0.25 =
+* Public board control is a header toggle next to Delete
+
+= 1.0.24 =
+* Optional public read-only board links (Settings → Storyboards)
+
+= 1.0.23 =
+* Block video uploads; storyboard photos are JPEG/PNG/WebP only
+
+= 1.0.22 =
+* Scene photos: pick from WP media library; camera capture on mobile
 
 = 1.0.21 =
 * Remove leftover New board FAB styles and bottom spacing
