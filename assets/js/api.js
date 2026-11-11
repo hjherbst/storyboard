@@ -49,6 +49,7 @@ export const api = {
   listBoards: () => request('/boards'),
   createBoard: (payload) => request('/boards', { method: 'POST', body: payload }),
   getBoard: (id) => request(`/boards/${id}`),
+  getBoardBySlug: (slug) => request(`/boards/by-slug/${encodeURIComponent(slug)}`),
   updateBoard: (id, payload) => request(`/boards/${id}`, { method: 'PATCH', body: payload }),
   deleteBoard: (id) => request(`/boards/${id}`, { method: 'DELETE' }),
   listScenes: (boardId) => request(`/boards/${boardId}/scenes`),

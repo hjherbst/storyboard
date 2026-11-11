@@ -61,6 +61,23 @@ final class Storyboards_REST {
 
 		register_rest_route(
 			self::NAMESPACE,
+			'/boards/by-slug/(?P<slug>[a-z0-9\-]+)',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'get_board_by_slug' ),
+				'permission_callback' => array( $this, 'can_manage' ),
+				'args'                => array(
+					'slug' => array(
+						'required'          => true,
+						'type'              => 'string',
+						'sanitize_callback' => 'sanitize_title',
+					),
+				),
+			)
+		);
+
+		register_rest_route(
+			self::NAMESPACE,
 			'/boards/(?P<id>\d+)',
 			array(
 				array(
@@ -157,7 +174,17 @@ final class Storyboards_REST {
 			)
 		);
 
-		$data = array_map( array( $this, 'format_board' ), $posts );
+		$ids   = array_map( static fn( $post ) => (int) $post->ID, $posts );
+		$stats = $this->get_boards_stats( $ids );
+
+		$data = array_map(
+			function ( WP_Post $post ) use ( $stats ) {
+				$id = (int) $post->ID;
+				return $this->format_board( $post, $stats[ $id ] ?? null );
+			},
+			$posts
+		);
+
 		return new WP_REST_Response( $data, 200 );
 	}
 
@@ -178,6 +205,7 @@ final class Storyboards_REST {
 			array(
 				'post_type'   => Storyboards_CPT::POST_TYPE,
 				'post_title'  => $title,
+				'post_name'   => $this->unique_board_slug( $title ),
 				'post_status' => 'private',
 				'post_author' => get_current_user_id(),
 			),
@@ -205,8 +233,25 @@ final class Storyboards_REST {
 			return $board;
 		}
 
-		$data             = $this->format_board( $board );
-		$data['scenes']   = $this->get_scenes_for_board( (int) $board->ID );
+		$data           = $this->format_board( $board );
+		$data['scenes'] = $this->get_scenes_for_board( (int) $board->ID );
+		return new WP_REST_Response( $data, 200 );
+	}
+
+	/**
+	 * GET /boards/by-slug/{slug}
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public function get_board_by_slug( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$slug  = sanitize_title( (string) $request['slug'] );
+		$board = $this->get_board_post_by_slug( $slug );
+		if ( is_wp_error( $board ) ) {
+			return $board;
+		}
+
+		$data           = $this->format_board( $board );
+		$data['scenes'] = $this->get_scenes_for_board( (int) $board->ID );
 		return new WP_REST_Response( $data, 200 );
 	}
 
@@ -233,6 +278,7 @@ final class Storyboards_REST {
 				return new WP_Error( 'storyboards_empty_title', __( 'Title is required.', 'storyboards' ), array( 'status' => 400 ) );
 			}
 			$update['post_title'] = $title;
+			$update['post_name']  = $this->unique_board_slug( $title, (int) $board->ID );
 		}
 
 		$result = wp_update_post( $update, true );
@@ -616,6 +662,32 @@ final class Storyboards_REST {
 	}
 
 	/**
+	 * Load board post by slug.
+	 */
+	private function get_board_post_by_slug( string $slug ): WP_Post|WP_Error {
+		$slug = sanitize_title( $slug );
+		if ( '' === $slug ) {
+			return new WP_Error( 'storyboards_not_found', __( 'Storyboard not found.', 'storyboards' ), array( 'status' => 404 ) );
+		}
+
+		$posts = get_posts(
+			array(
+				'name'             => $slug,
+				'post_type'        => Storyboards_CPT::POST_TYPE,
+				'post_status'      => array( 'private', 'publish', 'draft' ),
+				'posts_per_page'   => 1,
+				'suppress_filters' => true,
+			)
+		);
+
+		if ( empty( $posts[0] ) || ! ( $posts[0] instanceof WP_Post ) ) {
+			return new WP_Error( 'storyboards_not_found', __( 'Storyboard not found.', 'storyboards' ), array( 'status' => 404 ) );
+		}
+
+		return $posts[0];
+	}
+
+	/**
 	 * Fetch scene row by id.
 	 *
 	 * @return object|null
@@ -648,21 +720,103 @@ final class Storyboards_REST {
 	}
 
 	/**
+	 * Aggregate scene count and duration for board IDs.
+	 *
+	 * @param int[] $board_ids Board post IDs.
+	 * @return array<int, array{scene_count:int,total_duration_sec:int}>
+	 */
+	private function get_boards_stats( array $board_ids ): array {
+		$board_ids = array_values( array_filter( array_map( 'intval', $board_ids ) ) );
+		if ( empty( $board_ids ) ) {
+			return array();
+		}
+
+		global $wpdb;
+		$table = Storyboards_Activator::scenes_table();
+		$in    = implode( ',', array_fill( 0, count( $board_ids ), '%d' ) );
+
+		// phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$sql = $wpdb->prepare(
+			"SELECT storyboard_id,
+				COUNT(*) AS scene_count,
+				COALESCE(SUM(duration_sec), 0) AS total_duration_sec
+			FROM {$table}
+			WHERE storyboard_id IN ({$in})
+			GROUP BY storyboard_id",
+			...$board_ids
+		);
+
+		$rows = $wpdb->get_results( $sql ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared
+
+		$stats = array();
+		foreach ( (array) $rows as $row ) {
+			$stats[ (int) $row->storyboard_id ] = array(
+				'scene_count'         => (int) $row->scene_count,
+				'total_duration_sec'  => (int) $row->total_duration_sec,
+			);
+		}
+
+		return $stats;
+	}
+
+	/**
 	 * Format board for API.
 	 *
-	 * @param WP_Post $post Post.
+	 * @param WP_Post                              $post  Post.
+	 * @param array{scene_count?:int,total_duration_sec?:int}|null $stats Optional preloaded stats.
 	 * @return array<string, mixed>
 	 */
-	private function format_board( WP_Post $post ): array {
+	private function format_board( WP_Post $post, ?array $stats = null ): array {
 		$aspect = get_post_meta( $post->ID, Storyboards_CPT::META_ASPECT, true );
 		$aspect = Storyboards_CPT::sanitize_aspect( $aspect ?: '16:9' );
 
+		if ( null === $stats ) {
+			$loaded = $this->get_boards_stats( array( (int) $post->ID ) );
+			$stats  = $loaded[ (int) $post->ID ] ?? array(
+				'scene_count'        => 0,
+				'total_duration_sec' => 0,
+			);
+		}
+
+		$slug = (string) $post->post_name;
+		if ( '' === $slug ) {
+			$slug = $this->unique_board_slug( (string) $post->post_title, (int) $post->ID );
+			wp_update_post(
+				array(
+					'ID'        => (int) $post->ID,
+					'post_name' => $slug,
+				)
+			);
+		}
+
 		return array(
-			'id'           => (int) $post->ID,
-			'title'        => $post->post_title,
-			'aspect_ratio' => $aspect,
-			'modified'     => mysql_to_rfc3339( $post->post_modified_gmt ),
-			'created'      => mysql_to_rfc3339( $post->post_date_gmt ),
+			'id'                 => (int) $post->ID,
+			'title'              => $post->post_title,
+			'slug'               => $slug,
+			'url'                => Storyboards_Rewrite::board_url( $slug ),
+			'aspect_ratio'       => $aspect,
+			'scene_count'        => (int) ( $stats['scene_count'] ?? 0 ),
+			'total_duration_sec' => (int) ( $stats['total_duration_sec'] ?? 0 ),
+			'modified'           => mysql_to_rfc3339( $post->post_modified_gmt ),
+			'created'            => mysql_to_rfc3339( $post->post_date_gmt ),
+		);
+	}
+
+	/**
+	 * Build a unique post_name for a storyboard title.
+	 */
+	private function unique_board_slug( string $title, int $post_id = 0 ): string {
+		$slug = sanitize_title( $title );
+		if ( '' === $slug ) {
+			$slug = 'board';
+		}
+
+		return wp_unique_post_slug(
+			$slug,
+			$post_id,
+			'private',
+			Storyboards_CPT::POST_TYPE,
+			0
 		);
 	}
 

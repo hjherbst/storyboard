@@ -29,6 +29,7 @@ final class Storyboards_Activator {
 		Storyboards_CPT::register();
 		Storyboards_Rewrite::register_rewrites();
 		flush_rewrite_rules();
+		update_option( 'storyboards_rewrite_version', Storyboards_Rewrite::REWRITE_VERSION, false );
 	}
 
 	/**

@@ -4,7 +4,7 @@ Tags: storyboard, video, shotlist, production
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.0.1
+Stable tag: 1.0.21
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -44,6 +44,66 @@ Future integration notes:
 Updates are delivered from GitHub Releases (https://github.com/hjherbst/storyboard/releases).
 
 == Changelog ==
+
+= 1.0.21 =
+* Remove leftover New board FAB styles and bottom spacing
+
+= 1.0.20 =
+* Boards overview: New board as plus tile in the grid
+
+= 1.0.19 =
+* Always noindex /storyboards/; board URLs use the board name slug
+
+= 1.0.18 =
+* Add scene is a tile with plus icon instead of a FAB
+
+= 1.0.17 =
+* Desktop: click outside modal closes it; cancel buttons removed from sheets
+
+= 1.0.16 =
+* Scene photo full-width in modal; change/remove as icon actions
+
+= 1.0.15 =
+* Scene title is edited in the modal heading; separate title field removed
+
+= 1.0.14 =
+* Scene modal: small input text, wider Duration, more vertical padding
+
+= 1.0.13 =
+* Scene overview descriptions use theme small font size
+
+= 1.0.12 =
+* Scene titles use h4
+
+= 1.0.11 =
+* 6px radius on inputs, images, and grid tiles
+
+= 1.0.10 =
+* Swipe or tap to move between scenes in the editor; clearer text field surfaces
+
+= 1.0.9 =
+* Fix serif fallback: stop overriding theme body font with inherit
+
+= 1.0.8 =
+* Inherit theme typography; remove boxed/colored form chrome
+
+= 1.0.7 =
+* Cleaner UI with less rounding; editors as full-height right sidecar
+
+= 1.0.6 =
+* Board overview as aspect-ratio tiles; delete removed from overview
+
+= 1.0.5 =
+* Light theme-aware UI; scene tiles in a wide grid (image top, badges on image)
+
+= 1.0.4 =
+* Board overview shows scene count and total duration per board
+
+= 1.0.3 =
+* Board delete requires typing a random 4-digit code (fixes accidental one-tap delete)
+
+= 1.0.2 =
+* Clear in-app confirmation before deleting a storyboard (title + scene count warning)
 
 = 1.0.1 =
 * Prevent accidental loss of unsaved board/scene drafts (no overlay dismiss, confirm discard, keep form state across photo pick, handle browser back)
