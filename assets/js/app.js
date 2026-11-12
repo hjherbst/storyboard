@@ -1,4 +1,4 @@
-import { api } from './api.js';
+import { api } from 'storyboards-api';
 import { compressImage } from './compress.js';
 
 const cfg = window.StoryboardsConfig;
@@ -55,7 +55,7 @@ const state = {
 
 const AUDIO_MAX_SEC = 20;
 const AUDIO_BITRATE = 48000; // ~120 KB for 20s Opus — well under 1 MB
-const AUDIO_INSERT_TILE_SEC = 2;
+const INSERT_TILE_SEC = 1;
 const AUDIO_TRACKS = [1, 2];
 const LANE_LABEL_PX = 52; // 3.25rem @ 16px — keep playhead aligned with tracks
 const waveformCache = new Map(); // clipId -> number[] peaks 0..1
@@ -394,6 +394,15 @@ function renderBoardView() {
             <span class="sb-public-toggle-label">${esc(t.publicBoard)}</span>
             <span class="sb-public-toggle-track" aria-hidden="true"><span class="sb-public-toggle-thumb"></span></span>
           </button>
+          <button type="button" class="sb-menu-item" data-action="export-premiere" data-id="${board.id}" role="menuitem">
+            ${esc(t.exportPremiere || 'Export Premiere')}
+          </button>
+          <button type="button" class="sb-menu-item" data-action="export-fcp" data-id="${board.id}" role="menuitem">
+            ${esc(t.exportFcp || 'Export Final Cut')}
+          </button>
+          <button type="button" class="sb-menu-item" data-action="export-fcp-media" data-id="${board.id}" role="menuitem">
+            ${esc(t.exportFcpMedia || 'Export Final Cut + Media')}
+          </button>
           <button type="button" class="sb-menu-item is-danger" data-action="delete-board" data-id="${board.id}" role="menuitem">
             ${esc(t.delete)}
           </button>
@@ -403,7 +412,7 @@ function renderBoardView() {
 
   return `
     <header class="sb-header sb-header-board">
-      ${canManage ? `<button type="button" class="sb-icon-btn" data-action="back" aria-label="${esc(t.back)}">←</button>` : '<span class="sb-header-spacer"></span>'}
+      ${canManage ? `<button type="button" class="sb-icon-btn sb-header-back" data-action="back" aria-label="${esc(t.back)}">←</button>` : '<span class="sb-header-spacer sb-header-back"></span>'}
       <div class="sb-header-main">
         <h4 class="sb-board-title">${esc(board.title)}</h4>
         <div class="sb-header-meta">
@@ -411,10 +420,10 @@ function renderBoardView() {
           <span class="sb-dur">${esc(t.total)}: ${esc(formatTotal(total))}</span>
         </div>
       </div>
+      <div class="sb-header-end">${boardMenu}</div>
       <div class="sb-header-tools">
         ${viewToggle}
         ${selectToggle}
-        ${boardMenu}
       </div>
     </header>
     <main class="sb-main ${state.selectMode || state.recording ? 'has-bulk-bar' : ''}">
@@ -855,28 +864,26 @@ function renderFilmstripClip(clip, { draggable = false, kind = 'scene' } = {}) {
     </div>`;
 }
 
-function renderTimeline() {
-  if (!state.scenes.length && !(state.audio || []).length) {
-    return `<p class="sb-empty">${esc(t.emptyTimeline || t.noScenes)}</p>`;
-  }
+function laneInsertTile(kind, label) {
+  if (!canManage || state.recording) return '';
+  return `<div class="sb-lane-insert sb-lane-insert-${esc(kind)}" aria-hidden="true" title="${esc(label)}">
+      <span class="sb-lane-insert-plus" aria-hidden="true">+</span>
+      <span class="sb-lane-insert-label">${esc(label)}</span>
+    </div>`;
+}
 
+function renderTimeline() {
   const px = timelinePxPerSec();
-  const end = timelineEndSec();
+  const end = Math.max(timelineEndSec(), 24);
   const width = Math.ceil(end * px);
   const aClips = layoutARoll().map((c) => renderFilmstripClip(c, { draggable: false, kind: 'scene' })).join('');
   const bClips = layoutBRoll().map((c) => renderFilmstripClip(c, { draggable: true, kind: 'scene' })).join('');
+  const canInsert = canManage && !state.recording;
 
   const ticks = [];
   for (let s = 0; s <= end; s += 6) {
     ticks.push(`<span class="sb-tick is-major" style="left:${s * px}px"><em>${s}s</em></span>`);
   }
-
-  const insertTile = canManage && !state.recording
-    ? `<div class="sb-audio-insert" aria-hidden="true">
-        <span class="sb-audio-insert-plus" aria-hidden="true">+</span>
-        <span class="sb-audio-insert-label">${esc(t.voiceOver || 'Voice over')}</span>
-      </div>`
-    : '';
 
   const liveRecSec = state.recording
     ? Math.min(
@@ -907,10 +914,10 @@ function renderTimeline() {
         <div class="sb-lane-label">
           <span>${esc(label)}</span>
         </div>
-        <div class="sb-lane-track is-audio${canManage && !state.recording ? ' is-insertable' : ''}" style="width:${width}px" data-audio-track="${track}">
+        <div class="sb-lane-track is-audio${canInsert ? ' is-insertable' : ''}" style="width:${width}px" data-insert-lane="audio" data-audio-track="${track}">
           ${clips}
           ${liveClip}
-          ${insertTile}
+          ${laneInsertTile('audio', t.voiceOver || 'Voice over')}
         </div>
       </div>`;
   }).join('');
@@ -933,11 +940,17 @@ function renderTimeline() {
           <div class="sb-ruler is-scrub" style="width:${width}px" data-scrub="1" title="${esc(t.setPlayhead || 'Set playhead')}">${ticks.join('')}</div>
           <div class="sb-lane sb-lane-broll">
             <div class="sb-lane-label">${esc(t.laneB)}</div>
-            <div class="sb-lane-track is-broll" style="width:${width}px">${bClips || ''}</div>
+            <div class="sb-lane-track is-broll${canInsert ? ' is-insertable' : ''}" style="width:${width}px" data-insert-lane="b_roll">
+              ${bClips || ''}
+              ${laneInsertTile('b_roll', t.bRoll || 'B-Roll')}
+            </div>
           </div>
           <div class="sb-lane sb-lane-aroll">
             <div class="sb-lane-label">${esc(t.laneA)}</div>
-            <div class="sb-lane-track" style="width:${width}px">${aClips}</div>
+            <div class="sb-lane-track is-aroll${canInsert ? ' is-insertable' : ''}" style="width:${width}px" data-insert-lane="a_roll">
+              ${aClips}
+              ${laneInsertTile('a_roll', t.aRoll || 'A-Roll')}
+            </div>
           </div>
           ${audioLanes}
           ${playhead}
@@ -1731,6 +1744,9 @@ async function onActionClick(e) {
     'stop-record',
     'edit-audio',
     'delete-audio',
+    'export-premiere',
+    'export-fcp',
+    'export-fcp-media',
   ]);
   if (readOnly && manageOnly.has(action)) {
     return;
@@ -1905,6 +1921,24 @@ async function onActionClick(e) {
   if (action === 'open-board') {
     e.stopPropagation();
     await openBoard(Number(el.dataset.id));
+    return;
+  }
+
+  if (action === 'export-premiere' || action === 'export-fcp' || action === 'export-fcp-media') {
+    e.stopPropagation();
+    e.preventDefault();
+    state.boardMenuOpen = false;
+    render();
+    const id = Number(el.dataset.id || state.board?.id);
+    const format =
+      action === 'export-fcp-media' ? 'fcp-media' : action === 'export-fcp' ? 'fcp' : 'premiere';
+    try {
+      showToast(t.saving || '…');
+      await api.exportBoard(id, format);
+      showToast(t.exportDone || 'Export downloaded');
+    } catch (err) {
+      showToast(err.message || t.errorGeneric);
+    }
     return;
   }
 
@@ -2382,7 +2416,7 @@ function initTimelineInteractions() {
     wrap.querySelectorAll('[data-drag]').forEach((clip) => {
       clip.addEventListener('pointerdown', onTimelineDragStart);
     });
-    initAudioTrackInsert(wrap);
+    initLaneInsert(wrap);
   }
   initPlayheadScrub(wrap);
   initPlayerControls();
@@ -2395,7 +2429,7 @@ function initPlayheadScrub(wrap) {
   const scrubFromEvent = (e) => {
     if (e.target.closest('.sb-playhead-btn')) return;
     if (e.target.closest('.sb-film-clip')) return;
-    if (e.target.closest('[data-audio-track]')) return;
+    if (e.target.closest('[data-insert-lane]')) return;
     const scrub = e.target.closest('[data-scrub]');
     if (!scrub) return;
     e.preventDefault();
@@ -2608,11 +2642,11 @@ function disposePlaybackAudio() {
   state.playbackAudioEls.clear();
 }
 
-function initAudioTrackInsert(wrap) {
+function initLaneInsert(wrap) {
   if (state.recording) return;
   const px = timelinePxPerSec();
-  const tileW = Math.max(px * AUDIO_INSERT_TILE_SEC, 72);
-  const ghosts = [...wrap.querySelectorAll('.sb-audio-insert')];
+  const tileW = Math.max(1, px * INSERT_TILE_SEC);
+  const ghosts = [...wrap.querySelectorAll('.sb-lane-insert')];
 
   const hideAllGhosts = (except = null) => {
     ghosts.forEach((g) => {
@@ -2634,13 +2668,13 @@ function initAudioTrackInsert(wrap) {
     ghost.setAttribute('aria-hidden', 'false');
   };
 
-  // Default: never visible until hover.
   hideAllGhosts();
 
-  wrap.querySelectorAll('[data-audio-track]').forEach((trackEl) => {
-    const ghost = trackEl.querySelector('.sb-audio-insert');
+  wrap.querySelectorAll('[data-insert-lane]').forEach((trackEl) => {
+    const ghost = trackEl.querySelector('.sb-lane-insert');
     if (!ghost) return;
     ghost.style.width = `${tileW}px`;
+    const lane = trackEl.dataset.insertLane || 'audio';
     const trackIndex = Number(trackEl.dataset.audioTrack) === 2 ? 2 : 1;
 
     trackEl.addEventListener('pointerenter', (e) => {
@@ -2670,9 +2704,108 @@ function initAudioTrackInsert(wrap) {
       const rect = trackEl.getBoundingClientRect();
       const x = Math.min(Math.max(0, e.clientX - rect.left), Math.max(0, rect.width - 1));
       const sec = Math.max(0, Math.round(x / px));
-      startAudioRecording(sec, trackIndex);
+      if (lane === 'audio') {
+        startAudioRecording(sec, trackIndex);
+        return;
+      }
+      if (lane === 'b_roll') {
+        insertBRollAt(sec);
+        return;
+      }
+      if (lane === 'a_roll') {
+        insertARollAt(sec);
+      }
     });
   });
+}
+
+/**
+ * Insert a new A-roll scene at the snapped timeline second (sort order).
+ * @param {number} sec
+ */
+async function insertARollAt(sec) {
+  if (!state.board?.id) return;
+  const at = Math.max(0, Math.round(Number(sec) || 0));
+  const aLayout = layoutARoll();
+  let beforeId = null;
+  for (let i = 0; i < aLayout.length; i++) {
+    const c = aLayout[i];
+    if (at < c.start + c.dur) {
+      beforeId = at <= c.start + c.dur / 2 ? c.id : aLayout[i + 1]?.id ?? null;
+      break;
+    }
+  }
+
+  try {
+    showToast(t.saving || '…');
+    const created = await api.createScene(state.board.id, {
+      title: '',
+      role: 'a_roll',
+      duration_sec: 3,
+      description: '',
+      script: '',
+    });
+
+    const ids = (state.scenes || [])
+      .map((s) => Number(s.id))
+      .filter((id) => id !== Number(created.id));
+
+    let insertAt = ids.length;
+    if (beforeId != null) {
+      const idx = ids.indexOf(Number(beforeId));
+      insertAt = idx >= 0 ? idx : ids.length;
+    } else if (aLayout.length) {
+      const lastA = aLayout[aLayout.length - 1];
+      const idx = ids.indexOf(Number(lastA.id));
+      insertAt = idx >= 0 ? idx + 1 : ids.length;
+    }
+    ids.splice(insertAt, 0, Number(created.id));
+
+    state.scenes = await api.reorderScenes(state.board.id, ids);
+    const scene = state.scenes.find((s) => Number(s.id) === Number(created.id)) || created;
+    state.editingScene = { ...scene };
+    state.sceneBaseline = sceneSnapshot(state.editingScene);
+    state.pendingPhoto = null;
+    state.removePhoto = false;
+    openSheet('editScene');
+    render();
+  } catch (err) {
+    showToast(err.message || t.errorGeneric);
+    await refreshBoard();
+  }
+}
+
+/**
+ * Insert a new B-roll scene at start_sec.
+ * @param {number} sec
+ */
+async function insertBRollAt(sec) {
+  if (!state.board?.id) return;
+  const desired = Math.max(0, Math.round(Number(sec) || 0));
+  const durationSec = 3;
+  const startSec = resolveBRollStart(desired, durationSec, null);
+
+  try {
+    showToast(t.saving || '…');
+    const created = await api.createScene(state.board.id, {
+      title: '',
+      role: 'b_roll',
+      duration_sec: durationSec,
+      start_sec: startSec,
+      description: '',
+      script: '',
+    });
+    state.scenes = [...(state.scenes || []), created];
+    state.editingScene = { ...created };
+    state.sceneBaseline = sceneSnapshot(state.editingScene);
+    state.pendingPhoto = null;
+    state.removePhoto = false;
+    openSheet('editScene');
+    render();
+  } catch (err) {
+    showToast(err.message || t.errorGeneric);
+    await refreshBoard();
+  }
 }
 
 function audioTrackAtPoint(clientY) {
@@ -2978,6 +3111,10 @@ async function startAudioRecording(insertSec = 0, track = 1) {
         return;
       }
       try {
+        if (typeof api.createAudio !== 'function') {
+          showToast(t.errorGeneric);
+          return;
+        }
         showToast(t.uploading);
         const ext = extForAudioMime(blobType);
         const clip = await api.createAudio(state.board.id, {

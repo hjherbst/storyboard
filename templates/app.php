@@ -110,6 +110,11 @@ $i18n = array(
 	'copyLink'                   => __( 'Copy link', 'storyboards' ),
 	'linkCopied'                 => __( 'Link copied', 'storyboards' ),
 	'viewOnly'                   => __( 'View only', 'storyboards' ),
+	'exportPremiere'             => __( 'Export Premiere', 'storyboards' ),
+	'exportFcp'                  => __( 'Export Final Cut', 'storyboards' ),
+	'exportFcpMedia'             => __( 'Export Final Cut + Media', 'storyboards' ),
+	'exportDone'                 => __( 'Export downloaded', 'storyboards' ),
+	'exportEmpty'                => __( 'Add at least one A-roll scene before exporting.', 'storyboards' ),
 );
 
 ?><!DOCTYPE html>
@@ -139,10 +144,19 @@ $i18n = array(
 				'appBase'          => Storyboards_Rewrite::app_url(),
 				'initialBoardSlug' => Storyboards_Rewrite::requested_board_slug(),
 				'canManage'        => Storyboards_Rewrite::can_manage(),
+				'assetVer'         => $asset_ver,
 				'i18n'             => $i18n,
 			)
 		);
 		?>;
+	</script>
+	<script type="importmap">
+		{
+			"imports": {
+				"storyboards-api": <?php echo wp_json_encode( STORYBOARDS_URL . 'assets/js/api.js?v=' . rawurlencode( (string) $asset_ver ) ); ?>,
+				"storyboards-fcp-zip": <?php echo wp_json_encode( STORYBOARDS_URL . 'assets/js/fcp-zip.js?v=' . rawurlencode( (string) $asset_ver ) ); ?>
+			}
+		}
 	</script>
 	<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.6/Sortable.min.js" defer></script>
 	<script type="module" src="<?php echo esc_url( STORYBOARDS_URL . 'assets/js/app.js?v=' . rawurlencode( $asset_ver ) ); ?>"></script>

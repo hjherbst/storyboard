@@ -29,6 +29,7 @@ final class Storyboards_REST {
 	 */
 	public function register_hooks(): void {
 		add_action( 'rest_api_init', array( $this, 'register_routes' ) );
+		add_filter( 'rest_pre_serve_request', array( $this, 'serve_export_xml' ), 10, 4 );
 	}
 
 	/**
@@ -100,6 +101,28 @@ final class Storyboards_REST {
 					'methods'             => WP_REST_Server::DELETABLE,
 					'callback'            => array( $this, 'delete_board' ),
 					'permission_callback' => array( $this, 'can_manage' ),
+				),
+			)
+		);
+
+		register_rest_route(
+			self::NAMESPACE,
+			'/boards/(?P<id>\d+)/export',
+			array(
+				'methods'             => WP_REST_Server::READABLE,
+				'callback'            => array( $this, 'export_board' ),
+				'permission_callback' => array( $this, 'can_manage' ),
+				'args'                => array(
+					'format' => array(
+						'required'          => true,
+						'type'              => 'string',
+						'enum'              => array(
+							Storyboards_Export::FORMAT_PREMIERE,
+							Storyboards_Export::FORMAT_FCP,
+							Storyboards_Export::FORMAT_FCP_MEDIA,
+						),
+						'sanitize_callback' => 'sanitize_key',
+					),
 				),
 			)
 		);
@@ -312,6 +335,99 @@ final class Storyboards_REST {
 		$data['scenes'] = $this->get_scenes_for_board( (int) $board->ID );
 		$data['audio']  = $this->get_audio_for_board( (int) $board->ID );
 		return new WP_REST_Response( $data, 200 );
+	}
+
+	/**
+	 * GET /boards/{id}/export?format=premiere|fcp|fcp-media
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public function export_board( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$board = $this->get_board_post( (int) $request['id'] );
+		if ( is_wp_error( $board ) ) {
+			return $board;
+		}
+
+		$format = sanitize_key( (string) $request->get_param( 'format' ) );
+		$data   = $this->format_board( $board );
+		$result = Storyboards_Export::export(
+			$data,
+			$this->get_scenes_for_board( (int) $board->ID ),
+			$this->get_audio_for_board( (int) $board->ID ),
+			$format
+		);
+
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		$filename = preg_replace( '/[^a-zA-Z0-9._-]/', '-', (string) $result['filename'] );
+		if ( ! is_string( $filename ) || '' === $filename ) {
+			$filename = 'storyboard-export';
+		}
+
+		$body = '';
+		$mime = 'application/octet-stream';
+		if ( ! empty( $result['body'] ) && is_string( $result['body'] ) ) {
+			$body = $result['body'];
+			$mime = ! empty( $result['mime'] ) ? (string) $result['mime'] : 'application/zip';
+		} elseif ( ! empty( $result['xml'] ) && is_string( $result['xml'] ) ) {
+			$body = $result['xml'];
+			$mime = 'application/xml; charset=UTF-8';
+		} else {
+			return new WP_Error(
+				'storyboards_export_empty_body',
+				__( 'Export produced no file.', 'storyboards' ),
+				array( 'status' => 500 )
+			);
+		}
+
+		return new WP_REST_Response(
+			array(
+				'_storyboards_export_body'     => $body,
+				'_storyboards_export_filename' => $filename,
+			),
+			200,
+			array(
+				'Content-Type'        => $mime,
+				'Content-Disposition' => 'attachment; filename="' . $filename . '"',
+				'Cache-Control'       => 'no-store',
+			)
+		);
+	}
+
+	/**
+	 * Serve raw export bytes (XML or ZIP) instead of JSON-encoding the payload.
+	 *
+	 * @param bool             $served  Whether the request has already been served.
+	 * @param WP_HTTP_Response $result  Result to send.
+	 * @param WP_REST_Request  $request Request.
+	 * @param WP_REST_Server   $server  Server instance.
+	 */
+	public function serve_export_xml( $served, $result, $request, $server ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
+		if ( $served || ! ( $result instanceof WP_REST_Response ) ) {
+			return $served;
+		}
+
+		$data = $result->get_data();
+		if ( ! is_array( $data ) ) {
+			return $served;
+		}
+
+		$body = null;
+		if ( ! empty( $data['_storyboards_export_body'] ) && is_string( $data['_storyboards_export_body'] ) ) {
+			$body = $data['_storyboards_export_body'];
+		} elseif ( ! empty( $data['_storyboards_export_xml'] ) && is_string( $data['_storyboards_export_xml'] ) ) {
+			$body = $data['_storyboards_export_xml'];
+		}
+
+		if ( null === $body ) {
+			return $served;
+		}
+
+		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- raw download body.
+		echo $body;
+		return true;
 	}
 
 	/**

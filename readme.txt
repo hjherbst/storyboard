@@ -4,7 +4,7 @@ Tags: storyboard, video, shotlist, production
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.0.49
+Stable tag: 1.0.53
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,20 @@ Images are compressed in the browser (WebP, max 420px longest edge, target ≤ 7
 Updates are delivered from GitHub Releases (https://github.com/hjherbst/storyboard/releases).
 
 == Changelog ==
+
+= 1.0.53 =
+* Fix FCP crash on media import: stills as <video> (not asset-clip), spine A-roll
+
+= 1.0.52 =
+* FCP media export: convert WebM voiceovers to WAV (FCP-compatible)
+
+= 1.0.51 =
+* Final Cut export with media ZIP (oriented JPEGs + audio)
+
+= 1.0.50 =
+* Mobile list: two scene columns; two-row board header
+* Fix cached api.js so voiceover upload works on Safari/iPhone
+* Structure export for Premiere and Final Cut (XML placeholders)
 
 = 1.0.49 =
 * Filmstrip timeline with playhead, preview player, and flat lane design
