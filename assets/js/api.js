@@ -59,9 +59,23 @@ export const api = {
   deleteScene: (id) => request(`/scenes/${id}`, { method: 'DELETE' }),
   reorderScenes: (boardId, ids) =>
     request(`/boards/${boardId}/scenes/reorder`, { method: 'POST', body: { ids } }),
+  bulkDeleteScenes: (boardId, ids) =>
+    request(`/boards/${boardId}/scenes/bulk-delete`, { method: 'POST', body: { ids } }),
   uploadSceneImage: async (sceneId, blob, filename = 'scene.webp') => {
     const form = new FormData();
     form.append('file', blob, filename);
     return request(`/scenes/${sceneId}/image`, { method: 'POST', body: form });
   },
+  listAudio: (boardId) => request(`/boards/${boardId}/audio`),
+  createAudio: async (boardId, { blob, filename, title, start_sec, duration_sec, track }) => {
+    const form = new FormData();
+    form.append('file', blob, filename || 'voiceover.webm');
+    if (title) form.append('title', title);
+    if (start_sec != null) form.append('start_sec', String(start_sec));
+    if (duration_sec != null) form.append('duration_sec', String(duration_sec));
+    if (track != null) form.append('track', String(track));
+    return request(`/boards/${boardId}/audio`, { method: 'POST', body: form });
+  },
+  updateAudio: (id, payload) => request(`/audio/${id}`, { method: 'PATCH', body: payload }),
+  deleteAudio: (id) => request(`/audio/${id}`, { method: 'DELETE' }),
 };

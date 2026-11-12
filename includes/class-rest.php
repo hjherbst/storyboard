@@ -18,6 +18,12 @@ final class Storyboards_REST {
 	/** Hard server-side upload limit (bytes). Client targets 70KB. */
 	private const MAX_IMAGE_BYTES = 102400;
 
+	/** Max voiceover length in seconds. */
+	private const AUDIO_MAX_SEC = 20;
+
+	/** Max voiceover upload size in bytes (~1 MB). */
+	private const AUDIO_MAX_BYTES = 1048576;
+
 	/**
 	 * Register hooks.
 	 */
@@ -127,6 +133,16 @@ final class Storyboards_REST {
 
 		register_rest_route(
 			self::NAMESPACE,
+			'/boards/(?P<id>\d+)/scenes/bulk-delete',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'bulk_delete_scenes' ),
+				'permission_callback' => array( $this, 'can_manage' ),
+			)
+		);
+
+		register_rest_route(
+			self::NAMESPACE,
 			'/scenes/(?P<id>\d+)',
 			array(
 				array(
@@ -149,6 +165,40 @@ final class Storyboards_REST {
 				'methods'             => WP_REST_Server::CREATABLE,
 				'callback'            => array( $this, 'upload_scene_image' ),
 				'permission_callback' => array( $this, 'can_manage' ),
+			)
+		);
+
+		register_rest_route(
+			self::NAMESPACE,
+			'/boards/(?P<id>\d+)/audio',
+			array(
+				array(
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => array( $this, 'list_audio' ),
+					'permission_callback' => array( $this, 'can_read_board_request' ),
+				),
+				array(
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => array( $this, 'create_audio' ),
+					'permission_callback' => array( $this, 'can_manage' ),
+				),
+			)
+		);
+
+		register_rest_route(
+			self::NAMESPACE,
+			'/audio/(?P<id>\d+)',
+			array(
+				array(
+					'methods'             => 'PATCH',
+					'callback'            => array( $this, 'update_audio' ),
+					'permission_callback' => array( $this, 'can_manage' ),
+				),
+				array(
+					'methods'             => WP_REST_Server::DELETABLE,
+					'callback'            => array( $this, 'delete_audio' ),
+					'permission_callback' => array( $this, 'can_manage' ),
+				),
 			)
 		);
 	}
@@ -260,6 +310,7 @@ final class Storyboards_REST {
 
 		$data           = $this->format_board( $board );
 		$data['scenes'] = $this->get_scenes_for_board( (int) $board->ID );
+		$data['audio']  = $this->get_audio_for_board( (int) $board->ID );
 		return new WP_REST_Response( $data, 200 );
 	}
 
@@ -281,6 +332,7 @@ final class Storyboards_REST {
 
 		$data           = $this->format_board( $board );
 		$data['scenes'] = $this->get_scenes_for_board( (int) $board->ID );
+		$data['audio']  = $this->get_audio_for_board( (int) $board->ID );
 		return new WP_REST_Response( $data, 200 );
 	}
 
@@ -402,6 +454,7 @@ final class Storyboards_REST {
 		$role     = $this->sanitize_role( $body['role'] ?? 'a_roll' );
 		$title    = sanitize_text_field( (string) ( $body['title'] ?? '' ) );
 		$duration = $this->sanitize_duration( $body['duration_sec'] ?? 3 );
+		$start    = $this->sanitize_start( $body['start_sec'] ?? 0 );
 
 		$inserted = $wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
 			$table,
@@ -413,8 +466,9 @@ final class Storyboards_REST {
 				'description'   => sanitize_textarea_field( (string) ( $body['description'] ?? '' ) ),
 				'script'        => sanitize_textarea_field( (string) ( $body['script'] ?? '' ) ),
 				'duration_sec'  => $duration,
+				'start_sec'     => $start,
 			),
-			array( '%d', '%d', '%s', '%s', '%s', '%s', '%d' )
+			array( '%d', '%d', '%s', '%s', '%s', '%s', '%d', '%d' )
 		);
 
 		if ( false === $inserted ) {
@@ -470,6 +524,10 @@ final class Storyboards_REST {
 		if ( array_key_exists( 'duration_sec', $body ) ) {
 			$data['duration_sec'] = $this->sanitize_duration( $body['duration_sec'] );
 			$format[]             = '%d';
+		}
+		if ( array_key_exists( 'start_sec', $body ) ) {
+			$data['start_sec'] = $this->sanitize_start( $body['start_sec'] );
+			$format[]          = '%d';
 		}
 		$clear_image = array_key_exists( 'image_id', $body ) && null === $body['image_id'];
 
@@ -536,6 +594,71 @@ final class Storyboards_REST {
 		$wpdb->delete( $table, array( 'id' => (int) $scene->id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 
 		return new WP_REST_Response( array( 'deleted' => true, 'id' => (int) $scene->id ), 200 );
+	}
+
+	/**
+	 * POST /boards/{id}/scenes/bulk-delete
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public function bulk_delete_scenes( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		global $wpdb;
+
+		$board = $this->get_board_post( (int) $request['id'] );
+		if ( is_wp_error( $board ) ) {
+			return $board;
+		}
+
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = array();
+		}
+
+		$ids = isset( $body['ids'] ) && is_array( $body['ids'] )
+			? array_values( array_unique( array_map( 'intval', $body['ids'] ) ) )
+			: array();
+		$ids = array_values( array_filter( $ids, static fn( int $id ): bool => $id > 0 ) );
+
+		if ( empty( $ids ) ) {
+			return new WP_Error(
+				'storyboards_invalid_bulk_delete',
+				__( 'Select at least one scene to delete.', 'storyboards' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$table    = Storyboards_Activator::scenes_table();
+		$board_id = (int) $board->ID;
+		$deleted  = array();
+
+		foreach ( $ids as $scene_id ) {
+			$scene = $wpdb->get_row( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$wpdb->prepare(
+					"SELECT id, storyboard_id, image_id FROM {$table} WHERE id = %d AND storyboard_id = %d",
+					$scene_id,
+					$board_id
+				)
+			);
+			if ( ! $scene ) {
+				continue;
+			}
+
+			if ( ! empty( $scene->image_id ) ) {
+				wp_delete_attachment( (int) $scene->image_id, true );
+			}
+
+			$wpdb->delete( $table, array( 'id' => (int) $scene->id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$deleted[] = (int) $scene->id;
+		}
+
+		return new WP_REST_Response(
+			array(
+				'deleted' => true,
+				'ids'     => $deleted,
+				'scenes'  => $this->get_scenes_for_board( $board_id ),
+			),
+			200
+		);
 	}
 
 	/**
@@ -782,11 +905,12 @@ final class Storyboards_REST {
 		$table = Storyboards_Activator::scenes_table();
 		$in    = implode( ',', array_fill( 0, count( $board_ids ), '%d' ) );
 
+		// Duration counts A-roll only — B-roll overlays A-roll and does not extend program length.
 		// phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$sql = $wpdb->prepare(
 			"SELECT storyboard_id,
 				COUNT(*) AS scene_count,
-				COALESCE(SUM(duration_sec), 0) AS total_duration_sec
+				COALESCE(SUM(CASE WHEN role = 'a_roll' THEN duration_sec ELSE 0 END), 0) AS total_duration_sec
 			FROM {$table}
 			WHERE storyboard_id IN ({$in})
 			GROUP BY storyboard_id",
@@ -923,8 +1047,297 @@ final class Storyboards_REST {
 			'description'   => (string) $row->description,
 			'script'        => (string) $row->script,
 			'duration_sec'  => (int) $row->duration_sec,
+			'start_sec'     => isset( $row->start_sec ) ? (int) $row->start_sec : 0,
 			'image_id'      => $row->image_id ? (int) $row->image_id : null,
 			'image_url'     => $image_url,
+		);
+	}
+
+	/**
+	 * GET /boards/{id}/audio
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public function list_audio( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$board = $this->get_board_post( (int) $request['id'] );
+		if ( is_wp_error( $board ) ) {
+			return $board;
+		}
+		return new WP_REST_Response( $this->get_audio_for_board( (int) $board->ID ), 200 );
+	}
+
+	/**
+	 * Allowed audio extensions → MIME map for recorded voiceovers.
+	 *
+	 * @return array<string, string>
+	 */
+	private function audio_upload_mimes(): array {
+		return array(
+			'webm' => 'audio/webm',
+			'weba' => 'audio/webm',
+			'ogg'  => 'audio/ogg',
+			'oga'  => 'audio/ogg',
+			'mp3'  => 'audio/mpeg',
+			'm4a'  => 'audio/mp4',
+			'mp4'  => 'audio/mp4',
+			'wav'  => 'audio/wav',
+		);
+	}
+
+	/**
+	 * POST /boards/{id}/audio — multipart file upload (recorded voiceover).
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public function create_audio( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$board = $this->get_board_post( (int) $request['id'] );
+		if ( is_wp_error( $board ) ) {
+			return $board;
+		}
+
+		$files = $request->get_file_params();
+		if ( empty( $files['file'] ) || ! is_array( $files['file'] ) ) {
+			return new WP_Error( 'storyboards_audio_missing', __( 'Audio file is required.', 'storyboards' ), array( 'status' => 400 ) );
+		}
+
+		$file = $files['file'];
+		$size = isset( $file['size'] ) ? (int) $file['size'] : 0;
+		if ( $size < 1 ) {
+			return new WP_Error( 'storyboards_audio_empty', __( 'Audio file is empty.', 'storyboards' ), array( 'status' => 400 ) );
+		}
+		if ( $size > self::AUDIO_MAX_BYTES ) {
+			return new WP_Error( 'storyboards_audio_too_large', __( 'Audio must be 1 MB or smaller.', 'storyboards' ), array( 'status' => 400 ) );
+		}
+
+		$filename = isset( $file['name'] ) ? (string) $file['name'] : '';
+		$ext      = strtolower( pathinfo( $filename, PATHINFO_EXTENSION ) );
+		$allowed  = $this->audio_upload_mimes();
+		if ( '' === $ext || ! isset( $allowed[ $ext ] ) ) {
+			return new WP_Error( 'storyboards_audio_type', __( 'Only audio files are allowed.', 'storyboards' ), array( 'status' => 400 ) );
+		}
+
+		// Browser Content-Type can be video/webm for audio-only recordings — accept both.
+		$type = isset( $file['type'] ) ? strtolower( (string) $file['type'] ) : '';
+		$type = strtok( $type, ';' ) ?: '';
+		if (
+			$type
+			&& 0 !== strpos( $type, 'audio/' )
+			&& 'video/webm' !== $type
+			&& 'application/octet-stream' !== $type
+		) {
+			return new WP_Error( 'storyboards_audio_type', __( 'Only audio files are allowed.', 'storyboards' ), array( 'status' => 400 ) );
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/media.php';
+		require_once ABSPATH . 'wp-admin/includes/image.php';
+
+		$mime_map = $allowed;
+
+		// Bypass image-only / core MIME checks for this voiceover upload only.
+		$mime_filter = static function ( array $mimes ) use ( $mime_map ): array {
+			foreach ( $mime_map as $extension => $mime ) {
+				$mimes[ $extension ] = $mime;
+			}
+			return $mimes;
+		};
+
+		$filetype_filter = static function ( $data, $file_path, $filename_check, $mimes ) use ( $mime_map ) { // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter
+			$check_ext = strtolower( pathinfo( (string) $filename_check, PATHINFO_EXTENSION ) );
+			if ( isset( $mime_map[ $check_ext ] ) ) {
+				return array(
+					'ext'             => $check_ext,
+					'type'            => $mime_map[ $check_ext ],
+					'proper_filename' => $filename_check,
+				);
+			}
+			return $data;
+		};
+
+		add_filter( 'upload_mimes', $mime_filter, 99 );
+		add_filter( 'wp_check_filetype_and_ext', $filetype_filter, 99, 4 );
+
+		$attachment_id = media_handle_upload( 'file', (int) $board->ID );
+
+		remove_filter( 'upload_mimes', $mime_filter, 99 );
+		remove_filter( 'wp_check_filetype_and_ext', $filetype_filter, 99 );
+
+		if ( is_wp_error( $attachment_id ) ) {
+			return $attachment_id;
+		}
+
+		$title    = sanitize_text_field( (string) $request->get_param( 'title' ) );
+		$start    = $this->sanitize_start( $request->get_param( 'start_sec' ) ?? 0 );
+		$duration = $this->sanitize_audio_duration( $request->get_param( 'duration_sec' ) ?? 1 );
+		$track    = $this->sanitize_audio_track( $request->get_param( 'track' ) ?? 1 );
+
+		if ( '' === $title ) {
+			$title = __( 'Voiceover', 'storyboards' );
+		}
+
+		global $wpdb;
+		$table    = Storyboards_Activator::audio_table();
+		$inserted = $wpdb->insert( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
+			$table,
+			array(
+				'storyboard_id' => (int) $board->ID,
+				'track'         => $track,
+				'title'         => $title,
+				'start_sec'     => $start,
+				'duration_sec'  => $duration,
+				'attachment_id' => (int) $attachment_id,
+			),
+			array( '%d', '%d', '%s', '%d', '%d', '%d' )
+		);
+
+		if ( false === $inserted ) {
+			wp_delete_attachment( (int) $attachment_id, true );
+			return new WP_Error( 'storyboards_audio_create_failed', __( 'Could not save audio clip.', 'storyboards' ), array( 'status' => 500 ) );
+		}
+
+		$clip = $this->get_audio_row( (int) $wpdb->insert_id );
+		return new WP_REST_Response( $this->format_audio( $clip ), 201 );
+	}
+
+	/**
+	 * PATCH /audio/{id}
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public function update_audio( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		global $wpdb;
+
+		$clip = $this->get_audio_row( (int) $request['id'] );
+		if ( ! $clip ) {
+			return new WP_Error( 'storyboards_audio_not_found', __( 'Audio clip not found.', 'storyboards' ), array( 'status' => 404 ) );
+		}
+
+		$board = $this->get_board_post( (int) $clip->storyboard_id );
+		if ( is_wp_error( $board ) ) {
+			return $board;
+		}
+
+		$body = $request->get_json_params();
+		if ( ! is_array( $body ) ) {
+			$body = array();
+		}
+
+		$data   = array();
+		$format = array();
+
+		if ( array_key_exists( 'title', $body ) ) {
+			$data['title'] = sanitize_text_field( (string) $body['title'] );
+			$format[]      = '%s';
+		}
+		if ( array_key_exists( 'start_sec', $body ) ) {
+			$data['start_sec'] = $this->sanitize_start( $body['start_sec'] );
+			$format[]          = '%d';
+		}
+		if ( array_key_exists( 'duration_sec', $body ) ) {
+			$data['duration_sec'] = $this->sanitize_audio_duration( $body['duration_sec'] );
+			$format[]             = '%d';
+		}
+		if ( array_key_exists( 'track', $body ) ) {
+			$data['track'] = $this->sanitize_audio_track( $body['track'] );
+			$format[]      = '%d';
+		}
+
+		if ( empty( $data ) ) {
+			return new WP_REST_Response( $this->format_audio( $clip ), 200 );
+		}
+
+		$table  = Storyboards_Activator::audio_table();
+		$result = $wpdb->update( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$table,
+			$data,
+			array( 'id' => (int) $clip->id ),
+			$format,
+			array( '%d' )
+		);
+
+		if ( false === $result ) {
+			return new WP_Error( 'storyboards_audio_update_failed', __( 'Could not update audio clip.', 'storyboards' ), array( 'status' => 500 ) );
+		}
+
+		$updated = $this->get_audio_row( (int) $clip->id );
+		return new WP_REST_Response( $this->format_audio( $updated ), 200 );
+	}
+
+	/**
+	 * DELETE /audio/{id}
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public function delete_audio( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		global $wpdb;
+
+		$clip = $this->get_audio_row( (int) $request['id'] );
+		if ( ! $clip ) {
+			return new WP_Error( 'storyboards_audio_not_found', __( 'Audio clip not found.', 'storyboards' ), array( 'status' => 404 ) );
+		}
+
+		$board = $this->get_board_post( (int) $clip->storyboard_id );
+		if ( is_wp_error( $board ) ) {
+			return $board;
+		}
+
+		if ( ! empty( $clip->attachment_id ) ) {
+			wp_delete_attachment( (int) $clip->attachment_id, true );
+		}
+
+		$table = Storyboards_Activator::audio_table();
+		$wpdb->delete( $table, array( 'id' => (int) $clip->id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		return new WP_REST_Response( array( 'deleted' => true, 'id' => (int) $clip->id ), 200 );
+	}
+
+	/**
+	 * @param int $board_id Board ID.
+	 * @return array<int, array<string, mixed>>
+	 */
+	private function get_audio_for_board( int $board_id ): array {
+		global $wpdb;
+		$table = Storyboards_Activator::audio_table();
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				"SELECT * FROM {$table} WHERE storyboard_id = %d ORDER BY track ASC, start_sec ASC, id ASC",
+				$board_id
+			)
+		);
+		return array_map( array( $this, 'format_audio' ), (array) $rows );
+	}
+
+	/**
+	 * @param int $id Audio ID.
+	 */
+	private function get_audio_row( int $id ): ?object {
+		global $wpdb;
+		$table = Storyboards_Activator::audio_table();
+		$row   = $wpdb->get_row( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$wpdb->prepare( "SELECT * FROM {$table} WHERE id = %d", $id )
+		);
+		return $row ?: null;
+	}
+
+	/**
+	 * @param object $row DB row.
+	 * @return array<string, mixed>
+	 */
+	private function format_audio( object $row ): array {
+		$url = null;
+		if ( ! empty( $row->attachment_id ) ) {
+			$url = wp_get_attachment_url( (int) $row->attachment_id ) ?: null;
+		}
+		return array(
+			'id'            => (int) $row->id,
+			'storyboard_id' => (int) $row->storyboard_id,
+			'track'         => $this->sanitize_audio_track( $row->track ?? 1 ),
+			'title'         => (string) $row->title,
+			'start_sec'     => (int) $row->start_sec,
+			'duration_sec'  => (int) $row->duration_sec,
+			'attachment_id' => $row->attachment_id ? (int) $row->attachment_id : null,
+			'url'           => $url,
 		);
 	}
 
@@ -938,6 +1351,20 @@ final class Storyboards_REST {
 	}
 
 	/**
+	 * Sanitize timeline start (0–7200 seconds).
+	 */
+	private function sanitize_start( mixed $value ): int {
+		$n = (int) $value;
+		if ( $n < 0 ) {
+			return 0;
+		}
+		if ( $n > 7200 ) {
+			return 7200;
+		}
+		return $n;
+	}
+
+	/**
 	 * Sanitize duration (1–600 seconds).
 	 */
 	private function sanitize_duration( mixed $value ): int {
@@ -947,6 +1374,34 @@ final class Storyboards_REST {
 		}
 		if ( $n > 600 ) {
 			$n = 600;
+		}
+		return $n;
+	}
+
+	/**
+	 * Sanitize recorded voiceover duration (1–20 seconds).
+	 */
+	private function sanitize_audio_duration( mixed $value ): int {
+		$n = (int) $value;
+		if ( $n < 1 ) {
+			$n = 1;
+		}
+		if ( $n > self::AUDIO_MAX_SEC ) {
+			$n = self::AUDIO_MAX_SEC;
+		}
+		return $n;
+	}
+
+	/**
+	 * Sanitize audio lane index (1–2).
+	 */
+	private function sanitize_audio_track( mixed $value ): int {
+		$n = (int) $value;
+		if ( $n < 1 ) {
+			return 1;
+		}
+		if ( $n > 2 ) {
+			return 2;
 		}
 		return $n;
 	}

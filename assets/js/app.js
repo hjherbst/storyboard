@@ -13,10 +13,16 @@ const state = {
   board: null,
   scenes: [],
   mode: 'list', // list | timeline
-  sheet: null, // null | newBoard | editScene | confirmDeleteBoard
+  selectMode: false,
+  selectedSceneIds: [],
+  selectAnchorId: null, // last plain-clicked scene for Shift+range select
+  sheet: null, // null | newBoard | editScene | editAudio | confirmDeleteBoard
+  boardMenuOpen: false,
   pendingDeleteBoard: null, // { id, title, sceneCount, code }
   editingScene: null,
   sceneBaseline: null, // JSON snapshot for dirty checks
+  editingAudio: null,
+  audioBaseline: null,
   boardDraft: { title: '', aspect_ratio: '16:9' },
   boardBaseline: null,
   pendingPhoto: null, // { blob, filename, previewUrl } | null
@@ -25,7 +31,35 @@ const state = {
   toastTimer: null,
   sheetHistoryPushed: false,
   mediaFrame: null,
+  audio: [],
+  recording: false,
+  mediaRecorder: null,
+  recordChunks: [],
+  recordStartedAt: 0,
+  recordInsertSec: 0,
+  recordInsertTrack: 1,
+  recordRaf: null,
+  recordMaxTimer: null,
+  recordMime: '',
+  recordAnalyser: null,
+  recordAnalyserData: null,
+  recordLivePeaks: [],
+  playheadSec: 0,
+  playing: false,
+  playRaf: null,
+  playAnchorPerf: 0,
+  playAnchorSec: 0,
+  playPreviewId: null,
+  playbackAudioEls: new Map(),
 };
+
+const AUDIO_MAX_SEC = 20;
+const AUDIO_BITRATE = 48000; // ~120 KB for 20s Opus — well under 1 MB
+const AUDIO_INSERT_TILE_SEC = 2;
+const AUDIO_TRACKS = [1, 2];
+const LANE_LABEL_PX = 52; // 3.25rem @ 16px — keep playhead aligned with tracks
+const waveformCache = new Map(); // clipId -> number[] peaks 0..1
+let waveformAudioCtx = null;
 
 function esc(str) {
   return String(str ?? '')
@@ -46,7 +80,9 @@ function aspectClass(aspect) {
 }
 
 function totalDuration(scenes) {
-  return scenes.reduce((sum, s) => sum + (s.duration_sec || 3), 0);
+  return scenes
+    .filter((s) => (s.role || 'a_roll') === 'a_roll')
+    .reduce((sum, s) => sum + (s.duration_sec || 3), 0);
 }
 
 function formatTotal(sec) {
@@ -122,10 +158,25 @@ function applyBoardData(data, { resetUi = true } = {}) {
     is_public: !!data.is_public,
   };
   state.scenes = data.scenes || [];
+  state.audio = data.audio || [];
   if (resetUi) {
+    stopPlayback({ keepHead: true });
+    disposePlaybackAudio();
     state.view = 'board';
     state.mode = 'list';
     state.sheet = null;
+    state.selectMode = false;
+    state.selectedSceneIds = [];
+    state.selectAnchorId = null;
+    state.boardMenuOpen = false;
+    state.playheadSec = 0;
+  } else {
+    // Drop selections that no longer exist after refresh.
+    const alive = new Set(state.scenes.map((s) => Number(s.id)));
+    state.selectedSceneIds = state.selectedSceneIds.filter((id) => alive.has(id));
+    if (state.selectAnchorId != null && !alive.has(Number(state.selectAnchorId))) {
+      state.selectAnchorId = null;
+    }
   }
   setDocumentTitle(data.title);
 }
@@ -152,11 +203,19 @@ function navigateBoardUrl(slug, { replace = false } = {}) {
 }
 
 async function goToBoards({ fromHistory = false } = {}) {
+  stopPlayback({ keepHead: true });
+  disposePlaybackAudio();
   state.view = 'boards';
   state.board = null;
   state.scenes = [];
+  state.audio = [];
   state.mode = 'list';
+  state.selectMode = false;
+  state.selectedSceneIds = [];
+  state.selectAnchorId = null;
+  state.boardMenuOpen = false;
   state.sheet = null;
+  state.playheadSec = 0;
   setDocumentTitle('');
   if (!fromHistory) {
     navigateBoardsUrl();
@@ -180,7 +239,22 @@ async function syncViewFromLocation() {
 
 /* ---------- Render ---------- */
 
+function getTimelineScrollLeft() {
+  const wrap = document.getElementById('sb-timeline-wrap');
+  return wrap ? wrap.scrollLeft : 0;
+}
+
+function restoreTimelineScrollLeft(left) {
+  const wrap = document.getElementById('sb-timeline-wrap');
+  if (!wrap || left == null) return;
+  wrap.scrollLeft = left;
+}
+
 function render() {
+  const keepTimelineScroll =
+    state.view === 'board' && state.mode === 'timeline' && !state.selectMode;
+  const timelineScroll = keepTimelineScroll ? getTimelineScrollLeft() : 0;
+
   if (state.view === 'boards') {
     root.innerHTML = renderBoardsView();
   } else {
@@ -191,14 +265,27 @@ function render() {
     root.insertAdjacentHTML('beforeend', renderNewBoardSheet());
   } else if (state.sheet === 'editScene') {
     root.insertAdjacentHTML('beforeend', renderSceneSheet());
+  } else if (state.sheet === 'editAudio') {
+    root.insertAdjacentHTML('beforeend', renderAudioSheet());
   } else if (state.sheet === 'confirmDeleteBoard') {
     root.insertAdjacentHTML('beforeend', renderConfirmDeleteBoard());
   }
 
+  document.body.classList.toggle(
+    'sb-timeline-mode',
+    state.view === 'board' && state.mode === 'timeline' && !state.selectMode
+  );
+
   bindEvents();
-  if (canManage && state.view === 'board' && state.mode === 'list') {
+  if (canManage && state.view === 'board' && state.mode === 'list' && !state.selectMode) {
     initSortable();
   }
+  if (state.view === 'board' && state.mode === 'timeline' && !state.selectMode) {
+    initTimelineInteractions();
+    restoreTimelineScrollLeft(timelineScroll);
+    hydrateAudioWaveforms();
+  }
+  bindBoardMenuDismiss();
 }
 
 function sceneCountLabel(count) {
@@ -260,54 +347,159 @@ function renderBoardView() {
   }
 
   const total = totalDuration(state.scenes);
-  const body =
-    state.mode === 'timeline' ? renderTimeline() : renderSceneList();
+  const viewMode = state.selectMode ? 'list' : state.mode;
+  const body = viewMode === 'timeline' ? renderTimeline() : renderSceneList();
 
-  const headerActions = canManage
-    ? `<div class="sb-header-actions">
+  const selectToggle = canManage && state.scenes.length
+    ? `<button
+        type="button"
+        class="sb-select-toggle ${state.selectMode ? 'is-active' : ''}"
+        data-action="toggle-select-mode"
+      >${esc(state.selectMode ? t.doneSelecting : t.selectScenes)}</button>`
+    : '';
+
+  const viewToggle = state.selectMode
+    ? ''
+    : `<div class="sb-toggle" role="group" aria-label="View mode">
+        <button type="button" data-action="mode" data-mode="list" class="${state.mode === 'list' ? 'is-active' : ''}">${esc(t.list)}</button>
+        <button type="button" data-action="mode" data-mode="timeline" class="${state.mode === 'timeline' ? 'is-active' : ''}">${esc(t.timeline)}</button>
+      </div>`;
+
+  const boardMenu = canManage
+    ? `<div class="sb-menu ${state.boardMenuOpen ? 'is-open' : ''}">
         <button
           type="button"
-          class="sb-public-toggle ${board.is_public ? 'is-on' : ''}"
-          data-action="toggle-public"
-          role="switch"
-          aria-checked="${board.is_public ? 'true' : 'false'}"
-          title="${esc(board.is_public ? t.publicHint : t.makePublic)}"
+          class="sb-icon-btn sb-menu-trigger"
+          data-action="toggle-board-menu"
+          aria-expanded="${state.boardMenuOpen ? 'true' : 'false'}"
+          aria-haspopup="true"
+          aria-label="${esc(t.boardMenu || 'Board options')}"
+          title="${esc(t.boardMenu || 'Board options')}"
         >
-          <span class="sb-public-toggle-label">${esc(t.publicBoard)}</span>
-          <span class="sb-public-toggle-track" aria-hidden="true"><span class="sb-public-toggle-thumb"></span></span>
+          <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="5" r="1.6" fill="currentColor"/>
+            <circle cx="12" cy="12" r="1.6" fill="currentColor"/>
+            <circle cx="12" cy="19" r="1.6" fill="currentColor"/>
+          </svg>
         </button>
-        <button type="button" class="sb-header-delete" data-action="delete-board" data-id="${board.id}">${esc(t.delete)}</button>
+        <div class="sb-menu-panel" role="menu">
+          <button
+            type="button"
+            class="sb-public-toggle ${board.is_public ? 'is-on' : ''}"
+            data-action="toggle-public"
+            role="switch"
+            aria-checked="${board.is_public ? 'true' : 'false'}"
+            title="${esc(board.is_public ? t.publicHint : t.makePublic)}"
+          >
+            <span class="sb-public-toggle-label">${esc(t.publicBoard)}</span>
+            <span class="sb-public-toggle-track" aria-hidden="true"><span class="sb-public-toggle-thumb"></span></span>
+          </button>
+          <button type="button" class="sb-menu-item is-danger" data-action="delete-board" data-id="${board.id}" role="menuitem">
+            ${esc(t.delete)}
+          </button>
+        </div>
       </div>`
     : `<span class="sb-view-only">${esc(t.viewOnly)}</span>`;
 
   return `
-    <header class="sb-header">
-      ${canManage ? `<button type="button" class="sb-icon-btn" data-action="back" aria-label="${esc(t.back)}">←</button>` : '<span></span>'}
-      <h1>${esc(board.title)}</h1>
-      ${headerActions}
-    </header>
-    <main class="sb-main">
-      <div class="sb-detail-meta">
-        <span class="sb-badge">${esc(board.aspect_ratio)}</span>
-        <span class="sb-dur">${esc(t.total)}: ${esc(formatTotal(total))}</span>
-        <div class="sb-toggle" role="group" aria-label="View mode">
-          <button type="button" data-action="mode" data-mode="list" class="${state.mode === 'list' ? 'is-active' : ''}">${esc(t.list)}</button>
-          <button type="button" data-action="mode" data-mode="timeline" class="${state.mode === 'timeline' ? 'is-active' : ''}">${esc(t.timeline)}</button>
+    <header class="sb-header sb-header-board">
+      ${canManage ? `<button type="button" class="sb-icon-btn" data-action="back" aria-label="${esc(t.back)}">←</button>` : '<span class="sb-header-spacer"></span>'}
+      <div class="sb-header-main">
+        <h4 class="sb-board-title">${esc(board.title)}</h4>
+        <div class="sb-header-meta">
+          <span class="sb-badge">${esc(board.aspect_ratio)}</span>
+          <span class="sb-dur">${esc(t.total)}: ${esc(formatTotal(total))}</span>
         </div>
       </div>
+      <div class="sb-header-tools">
+        ${viewToggle}
+        ${selectToggle}
+        ${boardMenu}
+      </div>
+    </header>
+    <main class="sb-main ${state.selectMode || state.recording ? 'has-bulk-bar' : ''}">
       ${state.loading ? `<p class="sb-loading">…</p>` : body}
+      ${state.selectMode ? renderBulkBar() : ''}
+      ${state.recording ? renderRecordingBar() : ''}
     </main>
+  `;
+}
+
+function isSceneSelected(id) {
+  return state.selectedSceneIds.includes(Number(id));
+}
+
+function renderBulkBar() {
+  const count = state.selectedSceneIds.length;
+  const allSelected = state.scenes.length > 0 && count === state.scenes.length;
+  const label = (t.selectedCount || '%d selected').replace('%d', String(count));
+
+  return `
+    <div class="sb-bulk-bar" role="toolbar" aria-label="${esc(t.selectScenes)}">
+      <span class="sb-bulk-count">${esc(label)}</span>
+      <div class="sb-bulk-actions">
+        <button type="button" class="sb-btn" data-action="${allSelected ? 'deselect-all-scenes' : 'select-all-scenes'}">
+          ${esc(allSelected ? t.deselectAll : t.selectAll)}
+        </button>
+        <button
+          type="button"
+          class="sb-btn sb-btn-danger"
+          data-action="bulk-delete-scenes"
+          ${count ? '' : 'disabled'}
+        >${esc(t.deleteSelected)}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderRecordingBar() {
+  return `
+    <div class="sb-bulk-bar is-recording" role="status" aria-live="polite" aria-label="${esc(t.recording)}">
+      <div class="sb-rec-bulk-info">
+        <span class="sb-recording-dot" aria-hidden="true"></span>
+        <span class="sb-recording-label">
+          <span class="sb-rec-elapsed">0.0</span>/${AUDIO_MAX_SEC} sec
+        </span>
+      </div>
+      <div class="sb-recording-meter" aria-hidden="true">
+        <div class="sb-recording-meter-fill"></div>
+      </div>
+      <button
+        type="button"
+        class="sb-btn sb-rec-stop"
+        data-action="stop-record"
+        aria-label="${esc(t.stopRecording)}"
+        title="${esc(t.stopRecording)}"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" />
+        </svg>
+      </button>
+    </div>
   `;
 }
 
 function renderSceneList() {
   const aspect = state.board.aspect_ratio;
+  const selecting = state.selectMode && canManage;
   const cards = state.scenes
     .map((s) => {
+      const selected = isSceneSelected(s.id);
       return `
-      <li class="sb-scene-card" data-id="${s.id}">
-        ${canManage ? `<div class="sb-scene-handle" aria-label="Reorder">⠿</div>` : ''}
-        <button type="button" class="sb-scene-tile" data-action="${canManage ? 'edit-scene' : 'view-scene'}" data-id="${s.id}">
+      <li class="sb-scene-card role-${esc(s.role)}${selected ? ' is-selected' : ''}" data-id="${s.id}">
+        ${
+          selecting
+            ? `<label class="sb-scene-check">
+                <input type="checkbox" data-action="toggle-scene-select" data-id="${s.id}" ${selected ? 'checked' : ''} />
+                <span class="sb-sr-only">${esc(t.selectScenes)}</span>
+              </label>`
+            : canManage
+              ? `<div class="sb-scene-handle" aria-label="Reorder">⠿</div>`
+              : ''
+        }
+        <button type="button" class="sb-scene-tile" data-action="${
+          selecting ? 'toggle-scene-select' : canManage ? 'edit-scene' : 'view-scene'
+        }" data-id="${s.id}">
           <div class="sb-frame ${aspectClass(aspect)}">
             ${
               s.image_url
@@ -320,16 +512,16 @@ function renderSceneList() {
             </div>
           </div>
           <div class="sb-scene-info">
-            <h4>${esc(s.title)}</h4>
-            ${s.description ? `<p class="sb-scene-desc">${esc(s.description)}</p>` : ''}
+            <p class="sb-scene-title">${esc(s.title)}</p>
           </div>
         </button>
       </li>`;
     })
     .join('');
 
-  const addTile = canManage
-    ? `
+  const addTile =
+    canManage && !selecting
+      ? `
     <li class="sb-scene-card sb-scene-add">
       <button type="button" class="sb-scene-tile" data-action="add-scene">
         <div class="sb-frame ${aspectClass(aspect)}">
@@ -340,68 +532,485 @@ function renderSceneList() {
           </span>
         </div>
         <div class="sb-scene-info">
-          <h4>${esc(t.addScene)}</h4>
+          <p class="sb-scene-title">${esc(t.addScene)}</p>
         </div>
       </button>
     </li>`
-    : '';
+      : '';
 
-  return `<ul class="sb-scene-list ${aspectClass(aspect)}" ${canManage ? 'id="sb-sortable"' : ''}>${cards}${addTile}</ul>`;
+  const sortableAttr = canManage && !selecting ? 'id="sb-sortable"' : '';
+  return `<ul class="sb-scene-list ${aspectClass(aspect)} ${selecting ? 'is-selecting' : ''}" ${sortableAttr}>${cards}${addTile}</ul>`;
+}
+
+function timelinePxPerSec() {
+  const w = Math.max(window.innerWidth || 360, 320);
+  return w / 24; // 24-second viewport grid
+}
+
+function layoutARoll() {
+  let cursor = 0;
+  return state.scenes
+    .filter((s) => s.role === 'a_roll')
+    .map((s) => {
+      const dur = Math.max(1, Number(s.duration_sec) || 3);
+      const item = { ...s, start: cursor, dur };
+      cursor += dur;
+      return item;
+    });
+}
+
+function layoutBRoll() {
+  return state.scenes
+    .filter((s) => s.role === 'b_roll')
+    .map((s) => ({
+      ...s,
+      start: Math.max(0, Number(s.start_sec) || 0),
+      dur: Math.max(1, Number(s.duration_sec) || 3),
+    }));
+}
+
+function rangesOverlap(a0, a1, b0, b1) {
+  return a0 < b1 && a1 > b0;
+}
+
+/** Place B-roll without overlapping other B-rolls; prefer start nearest to desired. */
+function resolveBRollStart(desiredStart, dur, excludeId = null) {
+  const length = Math.max(1, Number(dur) || 1);
+  const others = layoutBRoll()
+    .filter((b) => Number(b.id) !== Number(excludeId))
+    .sort((a, b) => a.start - b.start);
+
+  let start = Math.max(0, Math.round(Number(desiredStart) || 0));
+
+  const overlaps = (s) =>
+    others.some((o) => rangesOverlap(s, s + length, o.start, o.start + o.dur));
+
+  if (!overlaps(start)) return start;
+
+  const candidates = [0];
+  for (const o of others) {
+    candidates.push(o.start + o.dur);
+    candidates.push(Math.max(0, o.start - length));
+  }
+  candidates.sort((a, b) => Math.abs(a - start) - Math.abs(b - start) || a - b);
+
+  for (const c of candidates) {
+    const s = Math.max(0, Math.round(c));
+    if (!overlaps(s)) return s;
+  }
+
+  const last = others[others.length - 1];
+  return last ? last.start + last.dur : 0;
+}
+
+/**
+ * Initial B-roll start: centered under the A-roll that precedes this new clip
+ * in scene order (last A-roll when appending from the editor).
+ */
+function defaultBRollStart(durationSec) {
+  const dur = Math.max(1, Number(durationSec) || 3);
+  const aLayout = layoutARoll();
+  let anchor = null;
+  for (const s of state.scenes) {
+    if (s.role === 'a_roll') {
+      const hit = aLayout.find((a) => Number(a.id) === Number(s.id));
+      if (hit) anchor = hit;
+    }
+  }
+  if (!anchor && aLayout.length) {
+    anchor = aLayout[aLayout.length - 1];
+  }
+
+  const desired = anchor
+    ? Math.max(0, Math.round(anchor.start + (anchor.dur - dur) / 2))
+    : 0;
+
+  return resolveBRollStart(desired, dur, null);
+}
+
+function layoutAudio(track = null) {
+  return (state.audio || [])
+    .filter((a) => (track == null ? true : Number(a.track || 1) === Number(track)))
+    .map((a) => ({
+      ...a,
+      track: Number(a.track) === 2 ? 2 : 1,
+      start: Math.max(0, Number(a.start_sec) || 0),
+      dur: Math.max(1, Number(a.duration_sec) || 1),
+    }));
+}
+
+function timelineEndSec() {
+  const ends = [
+    ...layoutARoll().map((c) => c.start + c.dur),
+    ...layoutBRoll().map((c) => c.start + c.dur),
+    ...layoutAudio().map((c) => c.start + c.dur),
+  ];
+  if (state.recording) {
+    ends.push(Number(state.recordInsertSec || 0) + AUDIO_MAX_SEC);
+  }
+  return Math.max(24, ...(ends.length ? ends : [0]), 24);
+}
+
+function clampPlayhead(sec) {
+  const end = Math.max(0, timelineEndSec());
+  const n = Number(sec) || 0;
+  if (n < 0) return 0;
+  if (n > end) return end;
+  return n;
+}
+
+/** Visible composition at time T: B-roll wins when present, else A-roll. */
+function clipAtTime(sec) {
+  const t = Number(sec) || 0;
+  const b = layoutBRoll().find((c) => t >= c.start && t < c.start + c.dur);
+  if (b) return b;
+  return layoutARoll().find((c) => t >= c.start && t < c.start + c.dur) || null;
+}
+
+function formatPlayheadTime(sec) {
+  const total = Math.max(0, Math.floor(Number(sec) || 0));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function laneLabelPx() {
+  const timeline = document.querySelector('.sb-timeline');
+  if (timeline) {
+    const raw = getComputedStyle(timeline).getPropertyValue('--sb-lane-label').trim();
+    if (raw.endsWith('rem')) {
+      const rem = parseFloat(raw) || 3.25;
+      const root = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+      return rem * root;
+    }
+    const px = parseFloat(raw);
+    if (!Number.isNaN(px) && px > 0) return px;
+  }
+  return LANE_LABEL_PX;
+}
+
+function playheadLeftPx(sec = state.playheadSec) {
+  return laneLabelPx() + clampPlayhead(sec) * timelinePxPerSec();
+}
+
+function filmstripFrames(clip, pxPerSec) {
+  const frames = [];
+  for (let i = 0; i < clip.dur; i += 1) {
+    frames.push(`
+      <span class="sb-frame-cell" style="width:${pxPerSec}px">
+        ${
+          clip.image_url
+            ? `<img src="${esc(clip.image_url)}" alt="" draggable="false">`
+            : `<span class="sb-frame-empty"></span>`
+        }
+      </span>`);
+  }
+  return frames.join('');
+}
+
+function hashSeed(value) {
+  const str = String(value ?? '');
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i += 1) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function seededPeaks(seed, count) {
+  let x = hashSeed(seed) || 1;
+  const peaks = [];
+  for (let i = 0; i < count; i += 1) {
+    x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+    const n = (x % 1000) / 1000;
+    // Soft speech-like envelope: quieter edges, varied mid section.
+    const env = 0.35 + 0.65 * Math.sin((Math.PI * (i + 0.5)) / count);
+    peaks.push(Math.max(0.08, Math.min(1, (0.25 + n * 0.75) * env)));
+  }
+  return peaks;
+}
+
+function peaksToWavePath(peaks, width, height) {
+  if (!peaks.length || width < 2) return '';
+  const mid = height / 2;
+  const maxAmp = mid * 0.92;
+  let d = `M 0 ${mid}`;
+  for (let i = 0; i < peaks.length; i += 1) {
+    const x = (i / Math.max(1, peaks.length - 1)) * width;
+    const y = mid - peaks[i] * maxAmp;
+    d += ` L ${x.toFixed(2)} ${y.toFixed(2)}`;
+  }
+  for (let i = peaks.length - 1; i >= 0; i -= 1) {
+    const x = (i / Math.max(1, peaks.length - 1)) * width;
+    const y = mid + peaks[i] * maxAmp;
+    d += ` L ${x.toFixed(2)} ${y.toFixed(2)}`;
+  }
+  return `${d} Z`;
+}
+
+function renderWaveformSvg(peaks, width, height = 28, { live = false } = {}) {
+  const w = Math.max(8, Math.round(width));
+  const h = Math.max(16, height);
+  const path = peaksToWavePath(peaks, w, h);
+  return `
+    <svg class="sb-audio-wave${live ? ' is-live' : ''}" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" preserveAspectRatio="none" aria-hidden="true">
+      <path d="${path}" fill="currentColor"></path>
+    </svg>`;
+}
+
+function barCountForWidth(widthPx) {
+  return Math.max(16, Math.min(160, Math.round(widthPx / 3)));
+}
+
+async function decodeAudioPeaks(url, bars) {
+  const res = await fetch(url, { credentials: 'same-origin' });
+  if (!res.ok) throw new Error('waveform fetch failed');
+  const raw = await res.arrayBuffer();
+  if (!waveformAudioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) throw new Error('no audio context');
+    waveformAudioCtx = new AC();
+  }
+  if (waveformAudioCtx.state === 'suspended') {
+    try {
+      await waveformAudioCtx.resume();
+    } catch {
+      /* ignore */
+    }
+  }
+  const audioBuf = await waveformAudioCtx.decodeAudioData(raw.slice(0));
+  const channel = audioBuf.getChannelData(0);
+  const block = Math.max(1, Math.floor(channel.length / bars));
+  const peaks = [];
+  for (let i = 0; i < bars; i += 1) {
+    let max = 0;
+    const start = i * block;
+    const end = Math.min(channel.length, start + block);
+    for (let j = start; j < end; j += 1) {
+      const v = Math.abs(channel[j]);
+      if (v > max) max = v;
+    }
+    peaks.push(max);
+  }
+  const peak = Math.max(...peaks, 0.0001);
+  return peaks.map((p) => Math.max(0.05, p / peak));
+}
+
+function hydrateAudioWaveforms() {
+  root.querySelectorAll('[data-wave-id]').forEach(async (host) => {
+    const id = host.dataset.waveId;
+    const url = host.dataset.waveUrl || '';
+    const width = parseFloat(host.dataset.waveWidth) || 80;
+    const bars = barCountForWidth(width);
+    if (!id || !url) return;
+
+    const cacheKey = `${id}:${bars}`;
+    if (waveformCache.has(cacheKey)) {
+      host.innerHTML = renderWaveformSvg(waveformCache.get(cacheKey), width);
+      return;
+    }
+    try {
+      const peaks = await decodeAudioPeaks(url, bars);
+      waveformCache.set(cacheKey, peaks);
+      if (host.isConnected) {
+        host.innerHTML = renderWaveformSvg(peaks, width);
+      }
+    } catch {
+      /* keep seeded placeholder */
+    }
+  });
+}
+
+function renderFilmstripClip(clip, { draggable = false, kind = 'scene' } = {}) {
+  const px = timelinePxPerSec();
+  const action = kind === 'audio'
+    ? (canManage ? 'edit-audio' : 'view-audio')
+    : canManage
+      ? 'edit-scene'
+      : 'view-scene';
+  const dragAttr = draggable && canManage
+    ? `data-drag="${kind}" data-id="${clip.id}"`
+    : '';
+  const title = kind === 'audio' ? clip.title : clip.title;
+  const widthPx = clip.dur * px;
+  let body = filmstripFrames(clip, px);
+  if (kind === 'audio') {
+    const bars = barCountForWidth(widthPx);
+    const cacheKey = `${clip.id}:${bars}`;
+    const peaks = waveformCache.get(cacheKey) || seededPeaks(clip.id, bars);
+    body = `<span class="sb-audio-wave-host" data-wave-id="${esc(String(clip.id))}" data-wave-url="${esc(clip.url || '')}" data-wave-width="${widthPx}">${renderWaveformSvg(peaks, widthPx)}</span>`;
+  }
+  // 1px gutter so abutting clips stay visually separated.
+  const boxWidth = Math.max(4, widthPx - 1);
+  return `
+    <div class="sb-film-clip ${kind === 'audio' ? 'is-audio' : `role-${esc(clip.role || '')}`}${draggable ? ' is-draggable' : ''}"
+         style="left:${clip.start * px}px;width:${boxWidth}px"
+         title="${esc(title)} (${clip.dur}s)"
+         data-action="${action}"
+         data-id="${clip.id}"
+         ${dragAttr}>
+      <div class="sb-film-strip">${body}</div>
+      <span class="sb-film-label">${esc(title)}</span>
+    </div>`;
 }
 
 function renderTimeline() {
-  if (!state.scenes.length) {
-    return `<p class="sb-empty">${esc(t.noScenes)}</p>`;
+  if (!state.scenes.length && !(state.audio || []).length) {
+    return `<p class="sb-empty">${esc(t.emptyTimeline || t.noScenes)}</p>`;
   }
 
-  const pxPerSec = 28;
-  let cursor = 0;
-  const placed = state.scenes.map((s) => {
-    const dur = s.duration_sec || 3;
-    const item = {
-      ...s,
-      start: cursor,
-      dur,
-      isDefault: !s.duration_sec,
-    };
-    cursor += dur;
-    return item;
-  });
+  const px = timelinePxPerSec();
+  const end = timelineEndSec();
+  const width = Math.ceil(end * px);
+  const aClips = layoutARoll().map((c) => renderFilmstripClip(c, { draggable: false, kind: 'scene' })).join('');
+  const bClips = layoutBRoll().map((c) => renderFilmstripClip(c, { draggable: true, kind: 'scene' })).join('');
 
-  const width = Math.max(cursor * pxPerSec + 40, 320);
-  const lanes = [
-    { key: 'a_roll', label: t.laneA },
-    { key: 'b_roll', label: t.laneB },
-    { key: 'voiceover', label: t.laneVO },
-  ];
+  const ticks = [];
+  for (let s = 0; s <= end; s += 6) {
+    ticks.push(`<span class="sb-tick is-major" style="left:${s * px}px"><em>${s}s</em></span>`);
+  }
 
-  const lanesHtml = lanes
-    .map((lane) => {
-      const clips = placed
-        .filter((s) => s.role === lane.key)
-        .map(
-          (s) => `
-          <div class="sb-clip ${esc(s.role)} ${s.isDefault ? 'is-default' : ''}"
-               style="left:${s.start * pxPerSec}px;width:${Math.max(s.dur * pxPerSec - 4, 28)}px"
-               title="${esc(s.title)} (${s.dur}s)"
-               data-action="${canManage ? 'edit-scene' : 'view-scene'}" data-id="${s.id}">
-            ${esc(s.title)}
+  const insertTile = canManage && !state.recording
+    ? `<div class="sb-audio-insert" aria-hidden="true">
+        <span class="sb-audio-insert-plus" aria-hidden="true">+</span>
+        <span class="sb-audio-insert-label">${esc(t.voiceOver || 'Voice over')}</span>
+      </div>`
+    : '';
+
+  const liveRecSec = state.recording
+    ? Math.min(
+        AUDIO_MAX_SEC,
+        Math.max(0.15, (Date.now() - state.recordStartedAt) / 1000)
+      )
+    : 0;
+
+  const audioLanes = AUDIO_TRACKS.map((track) => {
+    const clips = layoutAudio(track)
+      .map((c) => renderFilmstripClip(c, { draggable: true, kind: 'audio' }))
+      .join('');
+    const livePeaks = state.recordLivePeaks?.length
+      ? state.recordLivePeaks
+      : seededPeaks('live', barCountForWidth(Math.max(px, liveRecSec * px)));
+    const liveClip =
+      state.recording && Number(state.recordInsertTrack) === Number(track)
+        ? `<div class="sb-film-clip is-audio is-recording" id="sb-recording-clip"
+             style="left:${state.recordInsertSec * px}px;width:${liveRecSec * px}px"
+             title="${esc(t.voiceOver || 'Voice over')}">
+            <div class="sb-film-strip"><span class="sb-audio-wave-host" id="sb-recording-wave">${renderWaveformSvg(livePeaks, Math.max(px, liveRecSec * px), 28, { live: true })}</span></div>
+            <span class="sb-film-label">${esc(t.voiceOver || 'Voice over')} <em class="sb-rec-clip-time">0.0/${AUDIO_MAX_SEC}</em></span>
           </div>`
-        )
-        .join('');
-      return `
-        <div class="sb-lane">
-          <div class="sb-lane-label">${esc(lane.label)}</div>
-          <div class="sb-lane-track" style="width:${width}px">${clips}</div>
-        </div>`;
-    })
-    .join('');
+        : '';
+    const label = track === 2 ? (t.laneAudio2 || '2') : (t.laneAudio || '1');
+    return `
+      <div class="sb-lane sb-lane-audio">
+        <div class="sb-lane-label">
+          <span>${esc(label)}</span>
+        </div>
+        <div class="sb-lane-track is-audio${canManage && !state.recording ? ' is-insertable' : ''}" style="width:${width}px" data-audio-track="${track}">
+          ${clips}
+          ${liveClip}
+          ${insertTile}
+        </div>
+      </div>`;
+  }).join('');
+
+  const headSec = clampPlayhead(state.playheadSec);
+  const headLeft = playheadLeftPx(headSec);
+  const playLabel = state.playing ? (t.pausePreview || 'Pause') : (t.playPreview || 'Play');
+  const playhead = `
+    <div class="sb-playhead" id="sb-playhead" style="left:${headLeft}px">
+      <button type="button" class="sb-playhead-btn${state.playing ? ' is-playing' : ''}" data-action="toggle-playback" aria-label="${esc(playLabel)}" title="${esc(playLabel)}">
+        ${playbackIconSvg(state.playing)}
+      </button>
+      <span class="sb-playhead-line" aria-hidden="true"></span>
+    </div>`;
 
   return `
-    <div class="sb-timeline-wrap">
-      <div class="sb-timeline">${lanesHtml}</div>
+    <div class="sb-timeline-block">
+      <div class="sb-timeline-wrap" id="sb-timeline-wrap">
+        <div class="sb-timeline" style="--sb-sec:${px}px;--sb-lane-label:${LANE_LABEL_PX}px;width:${width + LANE_LABEL_PX}px">
+          <div class="sb-ruler is-scrub" style="width:${width}px" data-scrub="1" title="${esc(t.setPlayhead || 'Set playhead')}">${ticks.join('')}</div>
+          <div class="sb-lane sb-lane-broll">
+            <div class="sb-lane-label">${esc(t.laneB)}</div>
+            <div class="sb-lane-track is-broll" style="width:${width}px">${bClips || ''}</div>
+          </div>
+          <div class="sb-lane sb-lane-aroll">
+            <div class="sb-lane-label">${esc(t.laneA)}</div>
+            <div class="sb-lane-track" style="width:${width}px">${aClips}</div>
+          </div>
+          ${audioLanes}
+          ${playhead}
+        </div>
+      </div>
+      ${renderPreviewStage(headSec)}
     </div>
-    ${canManage ? `<p class="sb-premium-hint" style="margin-top:12px">* ${esc(t.defaultDuration)} = 3s display fallback</p>` : ''}
+  `;
+}
+
+function playbackIconSvg(playing) {
+  if (playing) {
+    return `<svg class="sb-playhead-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="5" width="3.5" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="3.5" height="14" rx="1" fill="currentColor"/></svg>`;
+  }
+  return `<svg class="sb-playhead-icon is-play" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6.8v10.4c0 .7.8 1.1 1.4.7l7.2-5.2c.5-.4.5-1.1 0-1.5L10.4 6.1C9.8 5.7 9 6.1 9 6.8z" fill="currentColor"/></svg>`;
+}
+
+function playerEndSec() {
+  const aEnd = layoutARoll().reduce((max, c) => Math.max(max, c.start + c.dur), 0);
+  return Math.max(1, aEnd || timelineEndSec());
+}
+
+function renderPreviewStage(sec = state.playheadSec) {
+  const aspect = state.board?.aspect_ratio || '16:9';
+  const clip = clipAtTime(sec);
+  const title = clip?.title || (t.previewEmpty || 'No scene at playhead');
+  const end = playerEndSec();
+  const progress = Math.min(100, (clampPlayhead(sec) / end) * 100);
+  const playLabel = state.playing ? (t.pausePreview || 'Pause') : (t.playPreview || 'Play');
+  const img = clip?.image_url
+    ? `<img src="${esc(clip.image_url)}" alt="" draggable="false">`
+    : `<span class="sb-preview-empty">${esc(clip ? t.photo : (t.previewEmpty || '—'))}</span>`;
+
+  return `
+    <section class="sb-player" aria-label="${esc(t.preview || 'Preview')}">
+      <div class="sb-player-stage ${aspectClass(aspect)}" id="sb-preview-stage" data-clip-id="${clip ? esc(String(clip.id)) : ''}">
+        ${img}
+        <button
+          type="button"
+          class="sb-player-overlay-play${state.playing ? ' is-playing' : ''}"
+          data-action="toggle-playback"
+          aria-label="${esc(playLabel)}"
+          title="${esc(playLabel)}"
+        >${playbackIconSvg(state.playing)}</button>
+      </div>
+      <div class="sb-player-chrome">
+        <button
+          type="button"
+          class="sb-player-btn${state.playing ? ' is-playing' : ''}"
+          data-action="toggle-playback"
+          aria-label="${esc(playLabel)}"
+          title="${esc(playLabel)}"
+        >${playbackIconSvg(state.playing)}</button>
+        <div
+          class="sb-player-scrub"
+          id="sb-player-scrub"
+          data-player-scrub="1"
+          role="slider"
+          aria-valuemin="0"
+          aria-valuemax="${end}"
+          aria-valuenow="${Math.round(sec)}"
+          aria-label="${esc(t.setPlayhead || 'Set playhead')}"
+        >
+          <div class="sb-player-scrub-track">
+            <div class="sb-player-scrub-fill" id="sb-player-scrub-fill" style="width:${progress}%"></div>
+          </div>
+        </div>
+        <span class="sb-player-time" id="sb-preview-time">${esc(formatPlayheadTime(sec))} / ${esc(formatPlayheadTime(end))}</span>
+      </div>
+      <div class="sb-player-caption">
+        <span class="sb-player-title" id="sb-preview-title">${esc(title)}</span>
+      </div>
+    </section>
   `;
 }
 
@@ -509,7 +1118,6 @@ function renderSceneSheet() {
     image_url: null,
   };
   const aspect = state.board?.aspect_ratio || '16:9';
-  const features = cfg.features || {};
   const previewUrl = state.pendingPhoto?.previewUrl || (!state.removePhoto && scene.image_url) || null;
   const isNew = !scene.id;
   const index = currentSceneIndex();
@@ -647,22 +1255,11 @@ function renderSceneSheet() {
           <div class="sb-field sb-field-text">
             <label for="sb-scene-desc">${esc(t.description)}</label>
             <textarea id="sb-scene-desc" name="description" rows="3">${esc(scene.description || '')}</textarea>
-            <button type="button" class="sb-premium-btn" ${features.ai_description ? '' : 'disabled aria-disabled="true"'} data-action="ai-desc">
-              ${esc(t.generateDesc)}
-            </button>
           </div>
 
           <div class="sb-field sb-field-text">
             <label for="sb-scene-script">${esc(t.script)}</label>
             <textarea id="sb-scene-script" name="script" rows="3">${esc(scene.script || '')}</textarea>
-            <div class="sb-premium-inline">
-              <button type="button" class="sb-premium-btn" ${features.ai_script ? '' : 'disabled aria-disabled="true"'} data-action="ai-script">
-                ${esc(t.generateScript)}
-              </button>
-              <button type="button" class="sb-premium-btn" ${features.ai_image ? '' : 'disabled aria-disabled="true"'} data-action="ai-image">
-                ${esc(t.generateImage)}
-              </button>
-            </div>
           </div>
 
           <div class="sb-sheet-actions">
@@ -671,6 +1268,82 @@ function renderSceneSheet() {
                 ? `<button type="button" class="sb-btn sb-btn-danger" data-action="delete-scene" data-id="${scene.id}">${esc(t.delete)}</button>`
                 : ''
             }
+            <button type="submit" class="sb-btn sb-btn-primary">${esc(t.save)}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderAudioSheet() {
+  const clip = state.editingAudio;
+  if (!clip) return '';
+
+  const trackLabel =
+    Number(clip.track) === 2 ? (t.laneAudio2 || '2') : (t.laneAudio || '1');
+  const meta = `${t.voiceOver || 'Voice over'} · ${trackLabel} · ${clip.duration_sec || 1}s`;
+
+  if (readOnly) {
+    return `
+      <div class="sb-overlay" role="dialog" aria-modal="true">
+        <div class="sb-sheet sb-sheet-scene sb-sheet-audio" data-stop>
+          <div class="sb-sheet-top">
+            <span></span>
+            <button type="button" class="sb-sheet-close sb-icon-btn" data-action="close-sheet" aria-label="${esc(t.close)}">✕</button>
+          </div>
+          <div class="sb-sheet-confirm-body">
+            <div class="sb-sheet-heading">
+              <h2 class="sb-scene-title-input" style="font-size:var(--wp--preset--font-size--x-large,1.75rem);font-weight:600;margin:0;">${esc(clip.title || '')}</h2>
+            </div>
+            <p class="sb-view-meta">${esc(meta)}</p>
+            ${
+              clip.url
+                ? `<div class="sb-field"><audio class="sb-audio-player" controls src="${esc(clip.url)}" preload="metadata"></audio></div>`
+                : ''
+            }
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="sb-overlay" role="dialog" aria-modal="true">
+      <div class="sb-sheet sb-sheet-scene sb-sheet-audio" data-stop>
+        <div class="sb-sheet-top">
+          <span></span>
+          <button type="button" class="sb-sheet-close sb-icon-btn" data-action="close-sheet" aria-label="${esc(t.close)}">✕</button>
+        </div>
+        <form id="sb-audio-form">
+          <div class="sb-sheet-heading">
+            <label class="sb-sr-only" for="sb-audio-title">${esc(t.title)}</label>
+            <input
+              id="sb-audio-title"
+              class="sb-scene-title-input"
+              name="title"
+              maxlength="200"
+              value="${esc(clip.title || '')}"
+              placeholder="${esc(t.voiceOver || 'Voice over')}"
+              autocomplete="off"
+            >
+          </div>
+          <p class="sb-view-meta">${esc(meta)}</p>
+          ${
+            clip.url
+              ? `<div class="sb-field"><audio class="sb-audio-player" controls src="${esc(clip.url)}" preload="metadata"></audio></div>`
+              : ''
+          }
+          <div class="sb-field">
+            <label>${esc(t.laneAudio || 'Track')}</label>
+            <div class="sb-segment" id="sb-audio-track-seg">
+              <button type="button" data-audio-track-opt="1" class="${Number(clip.track) !== 2 ? 'is-active' : ''}">${esc(t.laneAudio || '1')}</button>
+              <button type="button" data-audio-track-opt="2" class="${Number(clip.track) === 2 ? 'is-active' : ''}">${esc(t.laneAudio2 || '2')}</button>
+            </div>
+            <input type="hidden" name="track" id="sb-audio-track-input" value="${Number(clip.track) === 2 ? 2 : 1}">
+          </div>
+          <div class="sb-sheet-actions">
+            <button type="button" class="sb-btn sb-btn-danger" data-action="delete-audio" data-id="${clip.id}">${esc(t.delete)}</button>
             <button type="submit" class="sb-btn sb-btn-primary">${esc(t.save)}</button>
           </div>
         </form>
@@ -707,6 +1380,13 @@ function sceneSnapshot(scene) {
   });
 }
 
+function audioSnapshot(clip) {
+  return JSON.stringify({
+    title: (clip?.title || '').trim(),
+    track: Number(clip?.track) === 2 ? 2 : 1,
+  });
+}
+
 function boardSnapshot(draft) {
   return JSON.stringify({
     title: (draft?.title || '').trim(),
@@ -734,6 +1414,15 @@ function syncFormsIntoState() {
       duration_sec: Number(sceneForm.duration_sec.value) || 3,
     };
   }
+
+  const audioForm = root.querySelector('#sb-audio-form');
+  if (audioForm && state.editingAudio) {
+    state.editingAudio = {
+      ...state.editingAudio,
+      title: audioForm.title.value,
+      track: Number(audioForm.track?.value) === 2 ? 2 : 1,
+    };
+  }
 }
 
 function isSheetDirty() {
@@ -744,6 +1433,9 @@ function isSheetDirty() {
   }
   if (state.sheet === 'editScene') {
     return sceneSnapshot(state.editingScene) !== state.sceneBaseline;
+  }
+  if (state.sheet === 'editAudio') {
+    return audioSnapshot(state.editingAudio) !== state.audioBaseline;
   }
   return false;
 }
@@ -825,6 +1517,8 @@ function discardSheetState() {
   state.pendingDeleteBoard = null;
   state.editingScene = null;
   state.sceneBaseline = null;
+  state.editingAudio = null;
+  state.audioBaseline = null;
   state.boardDraft = { title: '', aspect_ratio: '16:9' };
   state.boardBaseline = null;
   state.removePhoto = false;
@@ -884,6 +1578,25 @@ function bindOverlayDismiss() {
   });
 }
 
+function bindBoardMenuDismiss() {
+  if (!state.boardMenuOpen) return;
+  const menu = root.querySelector('.sb-menu');
+  if (!menu) return;
+
+  const onPointerDown = (e) => {
+    if (menu.contains(e.target)) return;
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    if (!state.boardMenuOpen) return;
+    state.boardMenuOpen = false;
+    render();
+  };
+
+  // Defer so the opening click does not immediately close the menu.
+  setTimeout(() => {
+    document.addEventListener('pointerdown', onPointerDown, true);
+  }, 0);
+}
+
 function bindEvents() {
   root.querySelectorAll('[data-action]').forEach((el) => {
     el.addEventListener('click', onActionClick);
@@ -925,6 +1638,20 @@ function bindEvents() {
     if (cameraInput) {
       cameraInput.addEventListener('change', onPhotoSelected);
     }
+  }
+
+  const audioForm = root.querySelector('#sb-audio-form');
+  if (audioForm) {
+    audioForm.addEventListener('submit', onSaveAudio);
+    audioForm.addEventListener('input', syncFormsIntoState);
+    root.querySelectorAll('#sb-audio-track-seg [data-audio-track-opt]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        root.querySelectorAll('#sb-audio-track-seg [data-audio-track-opt]').forEach((b) => b.classList.remove('is-active'));
+        btn.classList.add('is-active');
+        root.querySelector('#sb-audio-track-input').value = btn.dataset.audioTrackOpt;
+        syncFormsIntoState();
+      });
+    });
   }
 
   const deleteCodeInput = root.querySelector('#sb-delete-code-input');
@@ -995,11 +1722,132 @@ async function onActionClick(e) {
     'remove-photo',
     'pick-media',
     'toggle-public',
-    'ai-desc',
-    'ai-script',
-    'ai-image',
+    'toggle-board-menu',
+    'toggle-select-mode',
+    'toggle-scene-select',
+    'select-all-scenes',
+    'deselect-all-scenes',
+    'bulk-delete-scenes',
+    'stop-record',
+    'edit-audio',
+    'delete-audio',
   ]);
   if (readOnly && manageOnly.has(action)) {
+    return;
+  }
+
+  if (action === 'stop-record') {
+    stopAudioRecording();
+    return;
+  }
+
+  if (action === 'toggle-board-menu') {
+    state.boardMenuOpen = !state.boardMenuOpen;
+    render();
+    return;
+  }
+
+  if (action === 'toggle-playback') {
+    e.stopPropagation();
+    togglePlayback();
+    return;
+  }
+
+  if (action === 'edit-audio' || action === 'view-audio') {
+    if (el.dataset.didDrag === '1') {
+      el.dataset.didDrag = '0';
+      return;
+    }
+    const id = Number(el.dataset.id);
+    const clip = (state.audio || []).find((a) => Number(a.id) === id);
+    if (!clip) return;
+    state.editingAudio = { ...clip, track: Number(clip.track) === 2 ? 2 : 1 };
+    state.audioBaseline = audioSnapshot(state.editingAudio);
+    openSheet('editAudio');
+    return;
+  }
+
+  if (action === 'delete-audio') {
+    const id = Number(el.dataset.id || state.editingAudio?.id);
+    if (!id) return;
+    if (!confirm(t.deleteAudio || 'Delete recording?')) return;
+    try {
+      await api.deleteAudio(id);
+      state.audio = (state.audio || []).filter((a) => Number(a.id) !== id);
+      closeSheet({ force: true });
+      showToast(t.deleted || 'Deleted');
+    } catch (err) {
+      showToast(err.message || t.errorGeneric);
+    }
+    return;
+  }
+
+  if (action === 'toggle-select-mode') {
+    state.selectMode = !state.selectMode;
+    state.selectedSceneIds = [];
+    state.selectAnchorId = null;
+    if (state.selectMode) {
+      state.mode = 'list';
+    }
+    render();
+    return;
+  }
+
+  if (action === 'toggle-scene-select') {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = Number(el.dataset.id);
+    if (!id) return;
+
+    const ids = state.scenes.map((s) => Number(s.id));
+    const clickIndex = ids.indexOf(id);
+    if (clickIndex < 0) return;
+
+    if (e.shiftKey && state.selectAnchorId != null) {
+      const anchorIndex = ids.indexOf(Number(state.selectAnchorId));
+      if (anchorIndex >= 0) {
+        const from = Math.min(anchorIndex, clickIndex);
+        const to = Math.max(anchorIndex, clickIndex);
+        const range = ids.slice(from, to + 1);
+        const selected = new Set(state.selectedSceneIds);
+        range.forEach((rangeId) => selected.add(rangeId));
+        state.selectedSceneIds = [...selected];
+        render();
+        return;
+      }
+    }
+
+    if (isSceneSelected(id)) {
+      state.selectedSceneIds = state.selectedSceneIds.filter((x) => x !== id);
+    } else {
+      state.selectedSceneIds = [...state.selectedSceneIds, id];
+    }
+    state.selectAnchorId = id;
+    render();
+    return;
+  }
+
+  if (action === 'select-all-scenes') {
+    state.selectedSceneIds = state.scenes.map((s) => Number(s.id));
+    state.selectAnchorId = state.selectedSceneIds[0] ?? null;
+    render();
+    return;
+  }
+
+  if (action === 'deselect-all-scenes') {
+    state.selectedSceneIds = [];
+    state.selectAnchorId = null;
+    render();
+    return;
+  }
+
+  if (action === 'bulk-delete-scenes') {
+    await bulkDeleteSelectedScenes();
+    return;
+  }
+
+  if (action === 'mode' && state.selectMode) {
+    // View mode is locked while selecting.
     return;
   }
 
@@ -1063,6 +1911,7 @@ async function onActionClick(e) {
   if (action === 'delete-board') {
     e.stopPropagation();
     e.preventDefault();
+    state.boardMenuOpen = false;
     const id = Number(el.dataset.id);
     await askDeleteBoard(id);
     return;
@@ -1123,6 +1972,7 @@ async function onActionClick(e) {
   }
 
   if (action === 'mode') {
+    stopPlayback({ keepHead: true });
     state.mode = el.dataset.mode;
     render();
     return;
@@ -1139,6 +1989,10 @@ async function onActionClick(e) {
   }
 
   if (action === 'edit-scene' || action === 'view-scene') {
+    if (el.dataset.didDrag === '1') {
+      el.dataset.didDrag = '0';
+      return;
+    }
     const id = Number(el.dataset.id);
     const scene = state.scenes.find((s) => s.id === id);
     if (!scene) return;
@@ -1196,8 +2050,33 @@ async function onActionClick(e) {
     return;
   }
 
-  if (action === 'ai-desc' || action === 'ai-script' || action === 'ai-image') {
-    showToast(cfg.features?.premium_hint || 'Premium — coming soon');
+}
+
+async function bulkDeleteSelectedScenes() {
+  if (!state.board?.id || !state.selectedSceneIds.length) return;
+  const count = state.selectedSceneIds.length;
+  const message = (t.confirmDeleteSelected || 'Delete %d selected scenes? This cannot be undone.').replace(
+    '%d',
+    String(count)
+  );
+  if (!confirm(message)) return;
+
+  try {
+    setLoading(true);
+    const result = await api.bulkDeleteScenes(state.board.id, state.selectedSceneIds);
+    state.scenes = result.scenes || [];
+    state.selectedSceneIds = [];
+    state.selectAnchorId = null;
+    if (!state.scenes.length) {
+      state.selectMode = false;
+    }
+    showToast(t.scenesDeleted || 'Scenes deleted');
+    render();
+  } catch (err) {
+    showToast(err.message || t.errorGeneric);
+    await refreshBoard();
+  } finally {
+    setLoading(false);
   }
 }
 
@@ -1359,8 +2238,23 @@ async function persistEditingScene() {
     if (state.removePhoto && !state.pendingPhoto) {
       payload.image_id = null;
     }
+    const original = state.scenes.find((s) => s.id === scene.id);
+    if (payload.role === 'b_roll') {
+      if (original && original.role !== 'b_roll') {
+        payload.start_sec = defaultBRollStart(payload.duration_sec);
+      } else {
+        const desired =
+          scene.start_sec != null
+            ? Number(scene.start_sec)
+            : Number(original?.start_sec) || 0;
+        payload.start_sec = resolveBRollStart(desired, payload.duration_sec, scene.id);
+      }
+    }
     saved = await api.updateScene(scene.id, payload);
   } else {
+    if (payload.role === 'b_roll') {
+      payload.start_sec = defaultBRollStart(payload.duration_sec);
+    }
     saved = await api.createScene(state.board.id, payload);
   }
 
@@ -1386,6 +2280,29 @@ async function onSaveScene(e) {
       history.back();
     }
     await refreshBoard();
+  } catch (err) {
+    showToast(err.message || t.errorGeneric);
+  }
+}
+
+async function onSaveAudio(e) {
+  e.preventDefault();
+  if (!state.editingAudio?.id) return;
+  syncFormsIntoState();
+  const title = (state.editingAudio.title || '').trim() || (t.voiceOver || 'Voice over');
+  const track = Number(state.editingAudio.track) === 2 ? 2 : 1;
+  try {
+    showToast(t.saving);
+    const updated = await api.updateAudio(state.editingAudio.id, { title, track });
+    state.audio = (state.audio || []).map((a) =>
+      Number(a.id) === Number(updated.id) ? { ...a, ...updated } : a
+    );
+    discardSheetState();
+    clearSheetHistoryFlag();
+    if (history.state?.storyboardsSheet) {
+      history.back();
+    }
+    render();
   } catch (err) {
     showToast(err.message || t.errorGeneric);
   }
@@ -1455,6 +2372,665 @@ function initSortable() {
       }
     },
   });
+}
+
+function initTimelineInteractions() {
+  const wrap = document.getElementById('sb-timeline-wrap');
+  if (!wrap) return;
+
+  if (canManage) {
+    wrap.querySelectorAll('[data-drag]').forEach((clip) => {
+      clip.addEventListener('pointerdown', onTimelineDragStart);
+    });
+    initAudioTrackInsert(wrap);
+  }
+  initPlayheadScrub(wrap);
+  initPlayerControls();
+}
+
+function initPlayheadScrub(wrap) {
+  const timeline = wrap.querySelector('.sb-timeline');
+  if (!timeline) return;
+
+  const scrubFromEvent = (e) => {
+    if (e.target.closest('.sb-playhead-btn')) return;
+    if (e.target.closest('.sb-film-clip')) return;
+    if (e.target.closest('[data-audio-track]')) return;
+    const scrub = e.target.closest('[data-scrub]');
+    if (!scrub) return;
+    e.preventDefault();
+    const rect = scrub.getBoundingClientRect();
+    const x = Math.min(Math.max(0, e.clientX - rect.left), Math.max(0, rect.width));
+    const sec = clampPlayhead(x / timelinePxPerSec());
+    setPlayhead(sec, { stop: true });
+  };
+
+  wrap.querySelectorAll('[data-scrub]').forEach((el) => {
+    el.addEventListener('pointerdown', scrubFromEvent);
+  });
+}
+
+function initPlayerControls() {
+  const scrub = document.getElementById('sb-player-scrub');
+  if (!scrub) return;
+
+  const seekFromEvent = (e) => {
+    const rect = scrub.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / Math.max(1, rect.width)));
+    setPlayhead(ratio * playerEndSec(), { stop: true });
+  };
+
+  scrub.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    scrub.setPointerCapture?.(e.pointerId);
+    seekFromEvent(e);
+    const onMove = (ev) => seekFromEvent(ev);
+    const onUp = (ev) => {
+      scrub.releasePointerCapture?.(ev.pointerId);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  });
+}
+
+function setPlayhead(sec, { stop = false, renderPreview = true } = {}) {
+  if (stop && state.playing) stopPlayback({ keepHead: true });
+  state.playheadSec = clampPlayhead(sec);
+  const head = document.getElementById('sb-playhead');
+  if (head) head.style.left = `${playheadLeftPx(state.playheadSec)}px`;
+  if (renderPreview) updatePreviewFrame(state.playheadSec);
+  syncPlaybackAudio(state.playheadSec, state.playing);
+}
+
+function updatePreviewFrame(sec) {
+  const clip = clipAtTime(sec);
+  const stage = document.getElementById('sb-preview-stage');
+  const timeEl = document.getElementById('sb-preview-time');
+  const titleEl = document.getElementById('sb-preview-title');
+  const fill = document.getElementById('sb-player-scrub-fill');
+  const scrub = document.getElementById('sb-player-scrub');
+  const end = playerEndSec();
+  const clipId = clip ? String(clip.id) : '';
+  const progress = Math.min(100, (clampPlayhead(sec) / end) * 100);
+
+  if (timeEl) timeEl.textContent = `${formatPlayheadTime(sec)} / ${formatPlayheadTime(end)}`;
+  if (titleEl) titleEl.textContent = clip?.title || (t.previewEmpty || 'No scene at playhead');
+  if (fill) fill.style.width = `${progress}%`;
+  if (scrub) scrub.setAttribute('aria-valuenow', String(Math.round(sec)));
+
+  if (!stage) return;
+  if (stage.dataset.clipId === clipId) return;
+  stage.dataset.clipId = clipId;
+  state.playPreviewId = clip ? clip.id : null;
+
+  const media = clip?.image_url
+    ? `<img src="${esc(clip.image_url)}" alt="" draggable="false">`
+    : `<span class="sb-preview-empty">${esc(clip ? t.photo : (t.previewEmpty || '—'))}</span>`;
+  const playLabel = state.playing ? (t.pausePreview || 'Pause') : (t.playPreview || 'Play');
+  stage.innerHTML = `${media}
+    <button
+      type="button"
+      class="sb-player-overlay-play${state.playing ? ' is-playing' : ''}"
+      data-action="toggle-playback"
+      aria-label="${esc(playLabel)}"
+      title="${esc(playLabel)}"
+    >${playbackIconSvg(state.playing)}</button>`;
+  const overlayBtn = stage.querySelector('.sb-player-overlay-play');
+  if (overlayBtn) overlayBtn.addEventListener('click', onActionClick);
+}
+
+function ensurePlaybackAudio(clip) {
+  if (!clip?.url) return null;
+  const id = String(clip.id);
+  let el = state.playbackAudioEls.get(id);
+  if (!el) {
+    el = new Audio(clip.url);
+    el.preload = 'auto';
+    state.playbackAudioEls.set(id, el);
+  }
+  return el;
+}
+
+function syncPlaybackAudio(sec, playing) {
+  const tNow = Number(sec) || 0;
+  const active = new Set();
+  for (const clip of layoutAudio()) {
+    const id = String(clip.id);
+    const el = ensurePlaybackAudio(clip);
+    if (!el) continue;
+    const inRange = tNow >= clip.start && tNow < clip.start + clip.dur;
+    if (playing && inRange) {
+      active.add(id);
+      const offset = Math.max(0, tNow - clip.start);
+      if (el.paused) {
+        try {
+          el.currentTime = offset;
+          void el.play();
+        } catch {
+          /* autoplay / seek can fail — ignore */
+        }
+      } else if (Math.abs(el.currentTime - offset) > 0.35) {
+        try {
+          el.currentTime = offset;
+        } catch {
+          /* ignore */
+        }
+      }
+    } else if (!el.paused) {
+      el.pause();
+    }
+  }
+  if (!playing) {
+    state.playbackAudioEls.forEach((el) => {
+      if (!el.paused) el.pause();
+    });
+  }
+}
+
+function tickPlayback(now) {
+  if (!state.playing) {
+    state.playRaf = null;
+    return;
+  }
+  const elapsed = (now - state.playAnchorPerf) / 1000;
+  const next = clampPlayhead(state.playAnchorSec + elapsed);
+  state.playheadSec = next;
+  const head = document.getElementById('sb-playhead');
+  if (head) head.style.left = `${playheadLeftPx(next)}px`;
+  updatePreviewFrame(next);
+  syncPlaybackAudio(next, true);
+
+  if (next >= timelineEndSec() - 0.001) {
+    stopPlayback({ keepHead: true });
+    return;
+  }
+  state.playRaf = requestAnimationFrame(tickPlayback);
+}
+
+function startPlayback() {
+  if (state.recording) return;
+  if (!state.scenes.length && !(state.audio || []).length) return;
+  if (state.playheadSec >= timelineEndSec() - 0.05) {
+    state.playheadSec = 0;
+  }
+  state.playing = true;
+  state.playAnchorPerf = performance.now();
+  state.playAnchorSec = state.playheadSec;
+  syncPlaybackAudio(state.playheadSec, true);
+  refreshPlayheadButtons();
+  state.playRaf = requestAnimationFrame(tickPlayback);
+}
+
+function stopPlayback({ keepHead = false } = {}) {
+  state.playing = false;
+  if (state.playRaf) {
+    cancelAnimationFrame(state.playRaf);
+    state.playRaf = null;
+  }
+  syncPlaybackAudio(state.playheadSec, false);
+  if (!keepHead) {
+    /* playhead stays where it is */
+  }
+  refreshPlayheadButtons();
+}
+
+function refreshPlayheadButtons() {
+  const playLabel = state.playing ? (t.pausePreview || 'Pause') : (t.playPreview || 'Play');
+  document
+    .querySelectorAll('.sb-playhead-btn, .sb-player-btn, .sb-player-overlay-play')
+    .forEach((btn) => {
+      btn.innerHTML = playbackIconSvg(state.playing);
+      btn.setAttribute('aria-label', playLabel);
+      btn.setAttribute('title', playLabel);
+      btn.classList.toggle('is-playing', !!state.playing);
+    });
+}
+
+function togglePlayback() {
+  if (state.playing) stopPlayback({ keepHead: true });
+  else startPlayback();
+}
+
+function disposePlaybackAudio() {
+  state.playbackAudioEls.forEach((el) => {
+    try {
+      el.pause();
+      el.removeAttribute('src');
+      el.load();
+    } catch {
+      /* ignore */
+    }
+  });
+  state.playbackAudioEls.clear();
+}
+
+function initAudioTrackInsert(wrap) {
+  if (state.recording) return;
+  const px = timelinePxPerSec();
+  const tileW = Math.max(px * AUDIO_INSERT_TILE_SEC, 72);
+  const ghosts = [...wrap.querySelectorAll('.sb-audio-insert')];
+
+  const hideAllGhosts = (except = null) => {
+    ghosts.forEach((g) => {
+      if (g === except) return;
+      g.classList.remove('is-visible');
+      g.setAttribute('aria-hidden', 'true');
+    });
+  };
+
+  const showGhost = (ghost, clientX, trackEl) => {
+    hideAllGhosts(ghost);
+    const rect = trackEl.getBoundingClientRect();
+    const x = Math.min(Math.max(0, clientX - rect.left), Math.max(0, rect.width - tileW));
+    const sec = Math.max(0, Math.round(x / px));
+    ghost.style.width = `${tileW}px`;
+    ghost.style.left = `${sec * px}px`;
+    ghost.dataset.startSec = String(sec);
+    ghost.classList.add('is-visible');
+    ghost.setAttribute('aria-hidden', 'false');
+  };
+
+  // Default: never visible until hover.
+  hideAllGhosts();
+
+  wrap.querySelectorAll('[data-audio-track]').forEach((trackEl) => {
+    const ghost = trackEl.querySelector('.sb-audio-insert');
+    if (!ghost) return;
+    ghost.style.width = `${tileW}px`;
+    const trackIndex = Number(trackEl.dataset.audioTrack) === 2 ? 2 : 1;
+
+    trackEl.addEventListener('pointerenter', (e) => {
+      if (e.target.closest('.sb-film-clip')) {
+        hideAllGhosts();
+        return;
+      }
+      showGhost(ghost, e.clientX, trackEl);
+    });
+    trackEl.addEventListener('pointerleave', (e) => {
+      const next = e.relatedTarget;
+      if (next && trackEl.contains(next)) return;
+      ghost.classList.remove('is-visible');
+      ghost.setAttribute('aria-hidden', 'true');
+    });
+    trackEl.addEventListener('pointermove', (e) => {
+      if (e.target.closest('.sb-film-clip')) {
+        hideAllGhosts();
+        return;
+      }
+      showGhost(ghost, e.clientX, trackEl);
+    });
+    trackEl.addEventListener('click', (e) => {
+      if (state.recording) return;
+      if (e.target.closest('.sb-film-clip')) return;
+      hideAllGhosts();
+      const rect = trackEl.getBoundingClientRect();
+      const x = Math.min(Math.max(0, e.clientX - rect.left), Math.max(0, rect.width - 1));
+      const sec = Math.max(0, Math.round(x / px));
+      startAudioRecording(sec, trackIndex);
+    });
+  });
+}
+
+function audioTrackAtPoint(clientY) {
+  const tracks = [...document.querySelectorAll('[data-audio-track]')];
+  for (const trackEl of tracks) {
+    const rect = trackEl.getBoundingClientRect();
+    if (clientY >= rect.top && clientY <= rect.bottom) {
+      return Number(trackEl.dataset.audioTrack) === 2 ? 2 : 1;
+    }
+  }
+  // Snap to nearest audio track when dragging between/near lanes.
+  let best = null;
+  let bestDist = Infinity;
+  for (const trackEl of tracks) {
+    const rect = trackEl.getBoundingClientRect();
+    const mid = (rect.top + rect.bottom) / 2;
+    const dist = Math.abs(clientY - mid);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = Number(trackEl.dataset.audioTrack) === 2 ? 2 : 1;
+    }
+  }
+  return best;
+}
+
+function onTimelineDragStart(e) {
+  if (!canManage || e.button != null && e.button !== 0) return;
+  const clip = e.currentTarget;
+  const kind = clip.dataset.drag;
+  const id = Number(clip.dataset.id);
+  if (!kind || !id) return;
+
+  const px = timelinePxPerSec();
+  const startX = e.clientX;
+  const startY = e.clientY;
+  const originLeft = parseFloat(clip.style.left) || 0;
+  const originTrack =
+    kind === 'audio'
+      ? Number(clip.closest('[data-audio-track]')?.dataset.audioTrack) === 2
+        ? 2
+        : 1
+      : null;
+  let moved = false;
+  let hoverTrack = originTrack;
+  clip.setPointerCapture?.(e.pointerId);
+  clip.classList.add('is-dragging');
+
+  const onMove = (ev) => {
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
+    const nextLeft = Math.max(0, originLeft + dx);
+    const snapped = Math.round(nextLeft / px) * px;
+    clip.style.left = `${snapped}px`;
+
+    if (kind === 'audio') {
+      const nextTrack = audioTrackAtPoint(ev.clientY) || originTrack;
+      hoverTrack = nextTrack;
+      const home = clip.closest('[data-audio-track]');
+      const homeTrack = Number(home?.dataset.audioTrack) === 2 ? 2 : 1;
+      if (nextTrack && nextTrack !== homeTrack) {
+        const target = document.querySelector(`[data-audio-track="${nextTrack}"]`);
+        if (target && clip.parentElement !== target) {
+          target.appendChild(clip);
+        }
+      } else if (home && clip.parentElement !== home && nextTrack === homeTrack) {
+        home.appendChild(clip);
+      }
+      document.querySelectorAll('[data-audio-track]').forEach((el) => {
+        el.classList.toggle('is-drop-target', Number(el.dataset.audioTrack) === Number(nextTrack));
+      });
+    }
+  };
+
+  const onUp = async (ev) => {
+    clip.releasePointerCapture?.(ev.pointerId);
+    clip.classList.remove('is-dragging');
+    document.querySelectorAll('[data-audio-track].is-drop-target').forEach((el) => {
+      el.classList.remove('is-drop-target');
+    });
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+
+    if (!moved) return;
+    clip.dataset.didDrag = '1';
+    let startSec = Math.max(0, Math.round((parseFloat(clip.style.left) || 0) / px));
+    const dropTrack =
+      kind === 'audio'
+        ? audioTrackAtPoint(ev.clientY) || hoverTrack || originTrack
+        : null;
+
+    try {
+      if (kind === 'scene') {
+        const scene = state.scenes.find((s) => Number(s.id) === id);
+        const dur = Math.max(1, Number(scene?.duration_sec) || 3);
+        if (scene?.role === 'b_roll') {
+          startSec = resolveBRollStart(startSec, dur, id);
+        }
+        const updated = await api.updateScene(id, { start_sec: startSec });
+        state.scenes = state.scenes.map((s) => (s.id === id ? { ...s, ...updated } : s));
+      } else if (kind === 'audio') {
+        const payload = { start_sec: startSec };
+        if (dropTrack && dropTrack !== originTrack) {
+          payload.track = dropTrack;
+        }
+        const updated = await api.updateAudio(id, payload);
+        state.audio = state.audio.map((a) => (a.id === id ? { ...a, ...updated } : a));
+      }
+      render();
+    } catch (err) {
+      showToast(err.message || t.errorGeneric);
+      await refreshBoard();
+    }
+  };
+
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
+}
+
+function pickAudioRecorderMime() {
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/mp4',
+    'audio/aac',
+    'audio/ogg;codecs=opus',
+  ];
+  for (const mime of candidates) {
+    if (MediaRecorder.isTypeSupported(mime)) return mime;
+  }
+  return '';
+}
+
+function extForAudioMime(mime) {
+  const m = String(mime || '').toLowerCase();
+  if (m.includes('mp4') || m.includes('aac') || m.includes('m4a')) return 'm4a';
+  if (m.includes('ogg')) return 'ogg';
+  if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
+  return 'webm';
+}
+
+function clearRecordingTimers() {
+  if (state.recordRaf) {
+    cancelAnimationFrame(state.recordRaf);
+    state.recordRaf = null;
+  }
+  if (state.recordMaxTimer) {
+    clearTimeout(state.recordMaxTimer);
+    state.recordMaxTimer = null;
+  }
+}
+
+function sampleLiveRecordingPeak() {
+  if (!state.recordAnalyser || !state.recordAnalyserData) return 0.12;
+  state.recordAnalyser.getByteTimeDomainData(state.recordAnalyserData);
+  let max = 0;
+  for (let i = 0; i < state.recordAnalyserData.length; i += 1) {
+    const v = Math.abs(state.recordAnalyserData[i] - 128) / 128;
+    if (v > max) max = v;
+  }
+  return Math.max(0.08, Math.min(1, max * 1.35));
+}
+
+function tickRecordingMeter() {
+  if (!state.recording) {
+    state.recordRaf = null;
+    return;
+  }
+  const elapsedMs = Math.min(AUDIO_MAX_SEC * 1000, Date.now() - state.recordStartedAt);
+  const sec = elapsedMs / 1000;
+  const progress = elapsedMs / (AUDIO_MAX_SEC * 1000);
+  const bar = document.querySelector('.sb-bulk-bar.is-recording');
+  if (bar) {
+    const elapsedEl = bar.querySelector('.sb-rec-elapsed');
+    const fill = bar.querySelector('.sb-recording-meter-fill');
+    if (elapsedEl) elapsedEl.textContent = sec.toFixed(1);
+    if (fill) fill.style.transform = `scaleX(${progress})`;
+  }
+
+  const live = document.getElementById('sb-recording-clip');
+  if (live) {
+    const px = timelinePxPerSec();
+    const widthSec = Math.max(0.15, sec);
+    const widthPx = widthSec * px;
+    live.style.width = `${widthPx}px`;
+    const timeEl = live.querySelector('.sb-rec-clip-time');
+    if (timeEl) timeEl.textContent = `${sec.toFixed(1)}/${AUDIO_MAX_SEC}`;
+
+    const bars = barCountForWidth(widthPx);
+    const peak = sampleLiveRecordingPeak();
+    let peaks = state.recordLivePeaks || [];
+    if (peaks.length < bars) {
+      peaks = [...peaks, ...Array(bars - peaks.length).fill(0.1)];
+    }
+    // Map elapsed progress into peak slots so the waveform grows with the clip.
+    const idx = Math.min(bars - 1, Math.floor(progress * (bars - 1)));
+    peaks[idx] = Math.max(peaks[idx] || 0.1, peak);
+    // Soft decay for neighboring slots keeps the shape readable.
+    if (idx > 0) peaks[idx - 1] = Math.max(peaks[idx - 1] * 0.92, peak * 0.55);
+    state.recordLivePeaks = peaks.slice(0, bars);
+    const host = document.getElementById('sb-recording-wave');
+    if (host) {
+      host.innerHTML = renderWaveformSvg(state.recordLivePeaks, widthPx, 28, { live: true });
+    }
+  }
+
+  state.recordRaf = requestAnimationFrame(tickRecordingMeter);
+}
+
+async function startAudioRecording(insertSec = 0, track = 1) {
+  if (state.recording) return;
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    showToast(t.micUnsupported || t.errorGeneric);
+    return;
+  }
+
+  stopPlayback({ keepHead: true });
+
+  const startSec = Math.max(0, Math.round(Number(insertSec) || 0));
+  const trackIndex = Number(track) === 2 ? 2 : 1;
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
+    const mime = pickAudioRecorderMime();
+    const options = mime
+      ? { mimeType: mime, audioBitsPerSecond: AUDIO_BITRATE }
+      : { audioBitsPerSecond: AUDIO_BITRATE };
+    let recorder;
+    try {
+      recorder = new MediaRecorder(stream, options);
+    } catch {
+      recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    }
+
+    state.recordChunks = [];
+    state.recordStartedAt = Date.now();
+    state.recordInsertSec = startSec;
+    state.recordInsertTrack = trackIndex;
+    state.recordMime = recorder.mimeType || mime || 'audio/webm';
+    state.mediaRecorder = recorder;
+    state.recording = true;
+    state.recordLivePeaks = [];
+    clearRecordingTimers();
+
+    try {
+      if (!waveformAudioCtx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (AC) waveformAudioCtx = new AC();
+      }
+      if (waveformAudioCtx) {
+        if (waveformAudioCtx.state === 'suspended') {
+          await waveformAudioCtx.resume();
+        }
+        const source = waveformAudioCtx.createMediaStreamSource(stream);
+        const analyser = waveformAudioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+        state.recordAnalyser = analyser;
+        state.recordAnalyserData = new Uint8Array(analyser.fftSize);
+      }
+    } catch {
+      state.recordAnalyser = null;
+      state.recordAnalyserData = null;
+    }
+
+    recorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size > 0) state.recordChunks.push(ev.data);
+    };
+    recorder.onstop = async () => {
+      clearRecordingTimers();
+      state.recordAnalyser = null;
+      state.recordAnalyserData = null;
+      state.recordLivePeaks = [];
+      stream.getTracks().forEach((tr) => tr.stop());
+      const elapsedMs = Math.max(500, Date.now() - state.recordStartedAt);
+      const durationSec = Math.min(
+        AUDIO_MAX_SEC,
+        Math.max(1, Math.round(elapsedMs / 1000))
+      );
+      const insertAt = state.recordInsertSec;
+      const insertTrack = state.recordInsertTrack === 2 ? 2 : 1;
+      const blobType = recorder.mimeType || state.recordMime || 'audio/webm';
+      const blob = new Blob(state.recordChunks, { type: blobType });
+      state.recordChunks = [];
+      state.mediaRecorder = null;
+      state.recording = false;
+      state.recordInsertSec = 0;
+      state.recordInsertTrack = 1;
+      state.recordMime = '';
+      render();
+
+      if (!state.board?.id || blob.size < 1) return;
+      if (blob.size > 1048576) {
+        showToast(t.audioTooLarge || t.errorGeneric);
+        return;
+      }
+      try {
+        showToast(t.uploading);
+        const ext = extForAudioMime(blobType);
+        const clip = await api.createAudio(state.board.id, {
+          blob,
+          filename: `voiceover-${Date.now()}.${ext}`,
+          title: t.voiceOver || 'Voice over',
+          start_sec: insertAt,
+          duration_sec: durationSec,
+          track: insertTrack,
+        });
+        state.audio = [...(state.audio || []), clip];
+        showToast(t.audioSaved || 'Recording saved');
+        render();
+      } catch (err) {
+        showToast(err.message || t.errorGeneric);
+      }
+    };
+
+    recorder.start(250);
+    render();
+    state.recordRaf = requestAnimationFrame(tickRecordingMeter);
+    state.recordMaxTimer = setTimeout(() => {
+      stopAudioRecording();
+    }, AUDIO_MAX_SEC * 1000);
+  } catch {
+    clearRecordingTimers();
+    state.recording = false;
+    state.recordInsertSec = 0;
+    state.recordInsertTrack = 1;
+    state.recordAnalyser = null;
+    state.recordAnalyserData = null;
+    state.recordLivePeaks = [];
+    showToast(t.micDenied || t.errorGeneric);
+    render();
+  }
+}
+
+function stopAudioRecording() {
+  clearRecordingTimers();
+  const rec = state.mediaRecorder;
+  if (!rec || rec.state === 'inactive') {
+    state.recording = false;
+    state.recordInsertSec = 0;
+    state.recordInsertTrack = 1;
+    state.recordAnalyser = null;
+    state.recordAnalyserData = null;
+    state.recordLivePeaks = [];
+    render();
+    return;
+  }
+  if (rec.state === 'recording' || rec.state === 'paused') {
+    rec.stop();
+  }
 }
 
 /* ---------- Data ---------- */
@@ -1547,6 +3123,12 @@ window.addEventListener('beforeunload', (e) => {
     e.preventDefault();
     e.returnValue = '';
   }
+});
+let timelineResizeTimer = null;
+window.addEventListener('resize', () => {
+  if (state.view !== 'board' || state.mode !== 'timeline') return;
+  clearTimeout(timelineResizeTimer);
+  timelineResizeTimer = setTimeout(() => render(), 120);
 });
 
 async function boot() {

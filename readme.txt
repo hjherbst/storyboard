@@ -4,7 +4,7 @@ Tags: storyboard, video, shotlist, production
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.0.27
+Stable tag: 1.0.49
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -18,22 +18,13 @@ Storyboards helps you plan videos on your phone:
 * Add scenes with optional photo, duration, description, and script
 * Label scenes as A-Roll, B-Roll, or Voiceover
 * Reorder scenes in a shot list
-* Toggle a timeline overview (sequential lanes, no overlap editing yet)
+* Bulk-select and delete scenes
+* Filmstrip timeline with playhead, preview player, and colored A/B/audio lanes
+* Record voiceovers (max 20s) on two audio tracks
 
 Open the app from the Admin Bar → **Storyboards**, or visit `/storyboards/` while logged in as an administrator.
 
 Images are compressed in the browser (WebP, max 420px longest edge, target ≤ 70KB) before upload.
-
-== Premium (coming soon) ==
-
-AI-assisted description, script, and image generation will be available via STRGL.de licensing.
-The free plugin ships with feature hooks (`storyboards_feature_enabled`) and disabled UI placeholders only.
-No AI API calls are made in this version.
-
-Future integration notes:
-
-* License validation: `POST https://strgl.de/api/v1/licenses/validate`
-* AI proxy endpoints will be added on STRGL (not available yet)
 
 == Installation ==
 
@@ -44,6 +35,13 @@ Future integration notes:
 Updates are delivered from GitHub Releases (https://github.com/hjherbst/storyboard/releases).
 
 == Changelog ==
+
+= 1.0.49 =
+* Filmstrip timeline with playhead, preview player, and flat lane design
+* Two audio tracks with mic recording, waveforms, rename/delete sidebar
+* Draggable B-roll and audio clips; A-roll duration defines board length
+* Color-coded A/B/audio clips with clear start/end edges
+* Compact board header with options menu; remove AI/assistant features
 
 = 1.0.27 =
 * Board back button always returns to the boards overview

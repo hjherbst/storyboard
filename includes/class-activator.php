@@ -21,10 +21,6 @@ final class Storyboards_Activator {
 		self::add_capabilities();
 		update_option( 'storyboards_db_version', STORYBOARDS_DB_VERSION );
 
-		if ( false === get_option( 'storyboards_license_key', false ) ) {
-			add_option( 'storyboards_license_key', '', '', false );
-		}
-
 		// Ensure rewrite rules are registered then flushed.
 		Storyboards_CPT::register();
 		Storyboards_Rewrite::register_rewrites();
@@ -45,10 +41,11 @@ final class Storyboards_Activator {
 	public static function create_tables(): void {
 		global $wpdb;
 
-		$table           = self::scenes_table();
 		$charset_collate = $wpdb->get_charset_collate();
+		$scenes          = self::scenes_table();
+		$audio           = self::audio_table();
 
-		$sql = "CREATE TABLE {$table} (
+		$scenes_sql = "CREATE TABLE {$scenes} (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 			storyboard_id bigint(20) unsigned NOT NULL,
 			sort_order int(11) NOT NULL DEFAULT 0,
@@ -57,6 +54,7 @@ final class Storyboards_Activator {
 			description longtext NOT NULL,
 			script longtext NOT NULL,
 			duration_sec int(11) NOT NULL DEFAULT 3,
+			start_sec int(11) NOT NULL DEFAULT 0,
 			image_id bigint(20) unsigned DEFAULT NULL,
 			created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -65,8 +63,25 @@ final class Storyboards_Activator {
 			KEY storyboard_sort (storyboard_id, sort_order)
 		) {$charset_collate};";
 
+		$audio_sql = "CREATE TABLE {$audio} (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			storyboard_id bigint(20) unsigned NOT NULL,
+			track tinyint(3) unsigned NOT NULL DEFAULT 1,
+			title varchar(255) NOT NULL DEFAULT '',
+			start_sec int(11) NOT NULL DEFAULT 0,
+			duration_sec int(11) NOT NULL DEFAULT 1,
+			attachment_id bigint(20) unsigned DEFAULT NULL,
+			created_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+			PRIMARY KEY  (id),
+			KEY storyboard_id (storyboard_id),
+			KEY storyboard_start (storyboard_id, start_sec),
+			KEY storyboard_track (storyboard_id, track, start_sec)
+		) {$charset_collate};";
+
 		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-		dbDelta( $sql );
+		dbDelta( $scenes_sql );
+		dbDelta( $audio_sql );
 	}
 
 	/**
@@ -85,6 +100,14 @@ final class Storyboards_Activator {
 	public static function scenes_table(): string {
 		global $wpdb;
 		return $wpdb->prefix . 'storyboard_scenes';
+	}
+
+	/**
+	 * Audio clips table name with prefix.
+	 */
+	public static function audio_table(): string {
+		global $wpdb;
+		return $wpdb->prefix . 'storyboard_audio';
 	}
 
 	/**

@@ -13,10 +13,13 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 
 global $wpdb;
 
-$table = $wpdb->prefix . 'storyboard_scenes';
+$scenes = $wpdb->prefix . 'storyboard_scenes';
+$audio  = $wpdb->prefix . 'storyboard_audio';
 
 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange
-$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
+$wpdb->query( "DROP TABLE IF EXISTS {$scenes}" );
+// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange
+$wpdb->query( "DROP TABLE IF EXISTS {$audio}" );
 
 $boards = get_posts(
 	array(
@@ -32,9 +35,11 @@ foreach ( $boards as $board_id ) {
 }
 
 delete_option( 'storyboards_db_version' );
-delete_option( 'storyboards_license_key' );
+delete_option( 'storyboards_license_key' ); // legacy
+delete_option( 'storyboards_license_cache' ); // legacy
 delete_option( 'storyboards_public_viewing' ); // legacy
 delete_option( 'storyboards_rewrite_version' );
+delete_transient( 'storyboards_credits_balance' ); // legacy
 
 $role = get_role( 'administrator' );
 if ( $role ) {
