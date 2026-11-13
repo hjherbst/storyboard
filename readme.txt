@@ -4,7 +4,7 @@ Tags: storyboard, video, shotlist, production
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.0.53
+Stable tag: 1.0.59
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,24 @@ Images are compressed in the browser (WebP, max 420px longest edge, target ≤ 7
 Updates are delivered from GitHub Releases (https://github.com/hjherbst/storyboard/releases).
 
 == Changelog ==
+
+= 1.0.59 =
+* Board nav label: All (was Back)
+
+= 1.0.58 =
+* Rename boards via title tap or board menu
+
+= 1.0.57 =
+* Header: text back link beside menu; Done stays right; List → Board; playhead #1f1f1f
+
+= 1.0.56 =
+* Timeline playhead: squared control; tap gutter before 0s to play from start
+
+= 1.0.55 =
+* Mobile: disable page pinch-zoom; timeline keeps custom zoom
+
+= 1.0.54 =
+* Mobile timeline: pinch-to-zoom seconds width (ctrl/cmd+wheel on desktop)
 
 = 1.0.53 =
 * Fix FCP crash on media import: stills as <video> (not asset-clip), spine A-roll

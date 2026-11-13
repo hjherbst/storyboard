@@ -16,7 +16,7 @@ const state = {
   selectMode: false,
   selectedSceneIds: [],
   selectAnchorId: null, // last plain-clicked scene for Shift+range select
-  sheet: null, // null | newBoard | editScene | editAudio | confirmDeleteBoard
+  sheet: null, // null | newBoard | editBoard | editScene | editAudio | confirmDeleteBoard
   boardMenuOpen: false,
   pendingDeleteBoard: null, // { id, title, sceneCount, code }
   editingScene: null,
@@ -51,6 +51,8 @@ const state = {
   playAnchorSec: 0,
   playPreviewId: null,
   playbackAudioEls: new Map(),
+  /** Timeline horizontal zoom: 1 = 24s fill the viewport width. */
+  timelineZoom: 1,
 };
 
 const AUDIO_MAX_SEC = 20;
@@ -58,8 +60,18 @@ const AUDIO_BITRATE = 48000; // ~120 KB for 20s Opus — well under 1 MB
 const INSERT_TILE_SEC = 1;
 const AUDIO_TRACKS = [1, 2];
 const LANE_LABEL_PX = 52; // 3.25rem @ 16px — keep playhead aligned with tracks
+const TIMELINE_BASE_SEC = 24; // seconds visible at zoom = 1
+const TIMELINE_ZOOM_MIN = 0.4;
+const TIMELINE_ZOOM_MAX = 4;
+let timelinePinching = false;
 const waveformCache = new Map(); // clipId -> number[] peaks 0..1
 let waveformAudioCtx = null;
+/** Pending two-step insert on touch devices: { lane, track, sec, ghost }. */
+let pendingLaneInsert = null;
+
+function isCoarsePointer() {
+  return window.matchMedia('(hover: none), (pointer: coarse)').matches;
+}
 
 function esc(str) {
   return String(str ?? '')
@@ -263,6 +275,8 @@ function render() {
 
   if (state.sheet === 'newBoard') {
     root.insertAdjacentHTML('beforeend', renderNewBoardSheet());
+  } else if (state.sheet === 'editBoard') {
+    root.insertAdjacentHTML('beforeend', renderEditBoardSheet());
   } else if (state.sheet === 'editScene') {
     root.insertAdjacentHTML('beforeend', renderSceneSheet());
   } else if (state.sheet === 'editAudio') {
@@ -394,6 +408,9 @@ function renderBoardView() {
             <span class="sb-public-toggle-label">${esc(t.publicBoard)}</span>
             <span class="sb-public-toggle-track" aria-hidden="true"><span class="sb-public-toggle-thumb"></span></span>
           </button>
+          <button type="button" class="sb-menu-item" data-action="rename-board" role="menuitem">
+            ${esc(t.renameBoard || 'Rename')}
+          </button>
           <button type="button" class="sb-menu-item" data-action="export-premiere" data-id="${board.id}" role="menuitem">
             ${esc(t.exportPremiere || 'Export Premiere')}
           </button>
@@ -410,17 +427,24 @@ function renderBoardView() {
       </div>`
     : `<span class="sb-view-only">${esc(t.viewOnly)}</span>`;
 
+  const backLink = canManage
+    ? `<button type="button" class="sb-nav-back" data-action="back">${esc(t.back)}</button>`
+    : '';
+
   return `
     <header class="sb-header sb-header-board">
-      ${canManage ? `<button type="button" class="sb-icon-btn sb-header-back" data-action="back" aria-label="${esc(t.back)}">←</button>` : '<span class="sb-header-spacer sb-header-back"></span>'}
       <div class="sb-header-main">
-        <h4 class="sb-board-title">${esc(board.title)}</h4>
+        ${
+          canManage
+            ? `<button type="button" class="sb-board-title sb-board-title-btn" data-action="rename-board" title="${esc(t.renameBoard || 'Rename')}">${esc(board.title)}</button>`
+            : `<h4 class="sb-board-title">${esc(board.title)}</h4>`
+        }
         <div class="sb-header-meta">
           <span class="sb-badge">${esc(board.aspect_ratio)}</span>
           <span class="sb-dur">${esc(t.total)}: ${esc(formatTotal(total))}</span>
         </div>
       </div>
-      <div class="sb-header-end">${boardMenu}</div>
+      <div class="sb-header-end">${backLink}${boardMenu}</div>
       <div class="sb-header-tools">
         ${viewToggle}
         ${selectToggle}
@@ -551,9 +575,15 @@ function renderSceneList() {
   return `<ul class="sb-scene-list ${aspectClass(aspect)} ${selecting ? 'is-selecting' : ''}" ${sortableAttr}>${cards}${addTile}</ul>`;
 }
 
+function clampTimelineZoom(z) {
+  const n = Number(z);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(TIMELINE_ZOOM_MAX, Math.max(TIMELINE_ZOOM_MIN, n));
+}
+
 function timelinePxPerSec() {
   const w = Math.max(window.innerWidth || 360, 320);
-  return w / 24; // 24-second viewport grid
+  return (w / TIMELINE_BASE_SEC) * clampTimelineZoom(state.timelineZoom);
 }
 
 function layoutARoll() {
@@ -858,6 +888,8 @@ function renderFilmstripClip(clip, { draggable = false, kind = 'scene' } = {}) {
          title="${esc(title)} (${clip.dur}s)"
          data-action="${action}"
          data-id="${clip.id}"
+         data-start="${clip.start}"
+         data-dur="${clip.dur}"
          ${dragAttr}>
       <div class="sb-film-strip">${body}</div>
       <span class="sb-film-label">${esc(title)}</span>
@@ -866,10 +898,25 @@ function renderFilmstripClip(clip, { draggable = false, kind = 'scene' } = {}) {
 
 function laneInsertTile(kind, label) {
   if (!canManage || state.recording) return '';
-  return `<div class="sb-lane-insert sb-lane-insert-${esc(kind)}" aria-hidden="true" title="${esc(label)}">
+  return `<div class="sb-lane-insert sb-lane-insert-${esc(kind)}" aria-hidden="true" title="${esc(label)}" data-insert-label="${esc(label)}">
       <span class="sb-lane-insert-plus" aria-hidden="true">+</span>
       <span class="sb-lane-insert-label">${esc(label)}</span>
     </div>`;
+}
+
+function laneAddButton(lane, track = 1) {
+  if (!canManage || state.recording) return '';
+  const label =
+    lane === 'audio'
+      ? t.recordAudio || 'Record'
+      : t.addAtPlayhead || 'Add at playhead';
+  return `<button type="button"
+      class="sb-lane-add"
+      data-action="lane-add"
+      data-insert-lane="${esc(lane)}"
+      data-audio-track="${track}"
+      aria-label="${esc(label)}"
+      title="${esc(label)}">+</button>`;
 }
 
 function renderTimeline() {
@@ -882,7 +929,7 @@ function renderTimeline() {
 
   const ticks = [];
   for (let s = 0; s <= end; s += 6) {
-    ticks.push(`<span class="sb-tick is-major" style="left:${s * px}px"><em>${s}s</em></span>`);
+    ticks.push(`<span class="sb-tick is-major" style="left:${s * px}px" data-sec="${s}"><em>${s}s</em></span>`);
   }
 
   const liveRecSec = state.recording
@@ -903,6 +950,7 @@ function renderTimeline() {
       state.recording && Number(state.recordInsertTrack) === Number(track)
         ? `<div class="sb-film-clip is-audio is-recording" id="sb-recording-clip"
              style="left:${state.recordInsertSec * px}px;width:${liveRecSec * px}px"
+             data-start="${state.recordInsertSec}" data-dur="${liveRecSec}"
              title="${esc(t.voiceOver || 'Voice over')}">
             <div class="sb-film-strip"><span class="sb-audio-wave-host" id="sb-recording-wave">${renderWaveformSvg(livePeaks, Math.max(px, liveRecSec * px), 28, { live: true })}</span></div>
             <span class="sb-film-label">${esc(t.voiceOver || 'Voice over')} <em class="sb-rec-clip-time">0.0/${AUDIO_MAX_SEC}</em></span>
@@ -913,6 +961,7 @@ function renderTimeline() {
       <div class="sb-lane sb-lane-audio">
         <div class="sb-lane-label">
           <span>${esc(label)}</span>
+          ${laneAddButton('audio', track)}
         </div>
         <div class="sb-lane-track is-audio${canInsert ? ' is-insertable' : ''}" style="width:${width}px" data-insert-lane="audio" data-audio-track="${track}">
           ${clips}
@@ -937,16 +986,25 @@ function renderTimeline() {
     <div class="sb-timeline-block">
       <div class="sb-timeline-wrap" id="sb-timeline-wrap">
         <div class="sb-timeline" style="--sb-sec:${px}px;--sb-lane-label:${LANE_LABEL_PX}px;width:${width + LANE_LABEL_PX}px">
-          <div class="sb-ruler is-scrub" style="width:${width}px" data-scrub="1" title="${esc(t.setPlayhead || 'Set playhead')}">${ticks.join('')}</div>
+          <div class="sb-ruler-row">
+            <button type="button" class="sb-ruler-start" data-scrub-start="1" title="${esc(t.playFromStart || 'Play from start')}" aria-label="${esc(t.playFromStart || 'Play from start')}"></button>
+            <div class="sb-ruler is-scrub" style="width:${width}px" data-scrub="1" title="${esc(t.setPlayhead || 'Set playhead')}">${ticks.join('')}</div>
+          </div>
           <div class="sb-lane sb-lane-broll">
-            <div class="sb-lane-label">${esc(t.laneB)}</div>
+            <div class="sb-lane-label">
+              <span>${esc(t.laneB)}</span>
+              ${laneAddButton('b_roll')}
+            </div>
             <div class="sb-lane-track is-broll${canInsert ? ' is-insertable' : ''}" style="width:${width}px" data-insert-lane="b_roll">
               ${bClips || ''}
               ${laneInsertTile('b_roll', t.bRoll || 'B-Roll')}
             </div>
           </div>
           <div class="sb-lane sb-lane-aroll">
-            <div class="sb-lane-label">${esc(t.laneA)}</div>
+            <div class="sb-lane-label">
+              <span>${esc(t.laneA)}</span>
+              ${laneAddButton('a_roll')}
+            </div>
             <div class="sb-lane-track is-aroll${canInsert ? ' is-insertable' : ''}" style="width:${width}px" data-insert-lane="a_roll">
               ${aClips}
               ${laneInsertTile('a_roll', t.aRoll || 'A-Roll')}
@@ -1108,6 +1166,29 @@ function renderNewBoardSheet() {
           </div>
           <div class="sb-sheet-actions">
             <button type="submit" class="sb-btn sb-btn-primary">${esc(t.create)}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `;
+}
+
+function renderEditBoardSheet() {
+  const draft = state.boardDraft;
+  return `
+    <div class="sb-overlay" role="dialog" aria-modal="true">
+      <div class="sb-sheet" data-stop>
+        <div class="sb-sheet-top">
+          <button type="button" class="sb-sheet-close sb-icon-btn" data-action="close-sheet" aria-label="${esc(t.close)}">✕</button>
+        </div>
+        <h2>${esc(t.renameBoard || 'Rename')}</h2>
+        <form id="sb-edit-board-form">
+          <div class="sb-field sb-field-text">
+            <label for="sb-edit-board-title">${esc(t.boardTitle)}</label>
+            <input id="sb-edit-board-title" name="title" required maxlength="200" autocomplete="off" value="${esc(draft.title || '')}">
+          </div>
+          <div class="sb-sheet-actions">
+            <button type="submit" class="sb-btn sb-btn-primary">${esc(t.save)}</button>
           </div>
         </form>
       </div>
@@ -1416,6 +1497,15 @@ function syncFormsIntoState() {
     };
   }
 
+  const editBoardForm = root.querySelector('#sb-edit-board-form');
+  if (editBoardForm) {
+    state.boardDraft = {
+      ...state.boardDraft,
+      title: editBoardForm.title.value,
+      aspect_ratio: state.board?.aspect_ratio || state.boardDraft.aspect_ratio || '16:9',
+    };
+  }
+
   const sceneForm = root.querySelector('#sb-scene-form');
   if (sceneForm && state.editingScene) {
     state.editingScene = {
@@ -1441,7 +1531,7 @@ function syncFormsIntoState() {
 function isSheetDirty() {
   if (readOnly) return false;
   syncFormsIntoState();
-  if (state.sheet === 'newBoard') {
+  if (state.sheet === 'newBoard' || state.sheet === 'editBoard') {
     return boardSnapshot(state.boardDraft) !== state.boardBaseline;
   }
   if (state.sheet === 'editScene') {
@@ -1631,6 +1721,15 @@ function bindEvents() {
     });
   }
 
+  const editBoardForm = root.querySelector('#sb-edit-board-form');
+  if (editBoardForm) {
+    editBoardForm.addEventListener('submit', onRenameBoard);
+    editBoardForm.addEventListener('input', syncFormsIntoState);
+    const titleInput = editBoardForm.querySelector('[name="title"]');
+    titleInput?.focus();
+    titleInput?.select();
+  }
+
   const sceneForm = root.querySelector('#sb-scene-form');
   if (sceneForm) {
     sceneForm.addEventListener('submit', onSaveScene);
@@ -1735,6 +1834,7 @@ async function onActionClick(e) {
     'remove-photo',
     'pick-media',
     'toggle-public',
+    'rename-board',
     'toggle-board-menu',
     'toggle-select-mode',
     'toggle-scene-select',
@@ -1744,11 +1844,53 @@ async function onActionClick(e) {
     'stop-record',
     'edit-audio',
     'delete-audio',
+    'lane-add',
     'export-premiere',
     'export-fcp',
     'export-fcp-media',
   ]);
   if (readOnly && manageOnly.has(action)) {
+    return;
+  }
+
+  if (action === 'lane-add') {
+    e.stopPropagation();
+    if (state.recording) return;
+    const lane = el.dataset.insertLane || 'a_roll';
+    const trackIndex = Number(el.dataset.audioTrack) === 2 ? 2 : 1;
+    const sec = Math.round(clampPlayhead(state.playheadSec));
+    // Explicit + on A/B: insert immediately at playhead.
+    if (lane !== 'audio') {
+      commitLaneInsert(lane, sec, trackIndex);
+      return;
+    }
+    // Audio: place a confirm marker first so recording never starts by surprise.
+    const wrap = document.getElementById('sb-timeline-wrap');
+    const trackEl = wrap?.querySelector(
+      `.sb-lane-track[data-insert-lane="audio"][data-audio-track="${trackIndex}"]`
+    );
+    const ghost = trackEl?.querySelector('.sb-lane-insert');
+    if (!ghost || !trackEl) {
+      commitLaneInsert(lane, sec, trackIndex);
+      return;
+    }
+    const px = timelinePxPerSec();
+    const tileW = Math.max(1, px * INSERT_TILE_SEC);
+    wrap.querySelectorAll('.sb-lane-insert').forEach((g) => {
+      if (g === ghost) return;
+      g.classList.remove('is-visible', 'is-pending');
+      g.setAttribute('aria-hidden', 'true');
+    });
+    ghost.style.width = `${tileW}px`;
+    ghost.style.left = `${sec * px}px`;
+    ghost.dataset.startSec = String(sec);
+    ghost.classList.add('is-visible', 'is-pending');
+    ghost.setAttribute('aria-hidden', 'false');
+    const label = ghost.querySelector('.sb-lane-insert-label');
+    if (label) {
+      label.textContent = t.tapToConfirmRecord || 'Tap again to record';
+    }
+    pendingLaneInsert = { lane, track: trackIndex, sec, ghost };
     return;
   }
 
@@ -1898,6 +2040,20 @@ async function onActionClick(e) {
     } catch (err) {
       showToast(err.message || t.errorGeneric);
     }
+    return;
+  }
+
+  if (action === 'rename-board') {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!state.board?.id) return;
+    state.boardMenuOpen = false;
+    state.boardDraft = {
+      title: state.board.title || '',
+      aspect_ratio: state.board.aspect_ratio || '16:9',
+    };
+    state.boardBaseline = boardSnapshot(state.boardDraft);
+    openSheet('editBoard');
     return;
   }
 
@@ -2129,6 +2285,43 @@ async function onCreateBoard(e) {
       history.back();
     }
     await openBoard(board.id);
+  } catch (err) {
+    showToast(err.message || t.errorGeneric);
+  }
+}
+
+async function onRenameBoard(e) {
+  e.preventDefault();
+  if (!state.board?.id) return;
+  syncFormsIntoState();
+  const title = (state.boardDraft.title || '').trim();
+  if (!title) return;
+
+  const prevSlug = state.board.slug;
+  try {
+    const updated = await api.updateBoard(state.board.id, { title });
+    state.board = {
+      ...state.board,
+      title: updated.title || title,
+      slug: updated.slug || state.board.slug,
+      url: updated.url || state.board.url,
+    };
+    state.boards = state.boards.map((b) =>
+      b.id === state.board.id
+        ? { ...b, title: state.board.title, slug: state.board.slug, url: state.board.url }
+        : b
+    );
+    setDocumentTitle(state.board.title);
+    discardSheetState();
+    clearSheetHistoryFlag();
+    if (history.state?.storyboardsSheet) {
+      history.back();
+    }
+    if (state.board.slug && state.board.slug !== prevSlug) {
+      navigateBoardUrl(state.board.slug, { replace: true });
+    }
+    render();
+    showToast(t.boardRenamed || t.saved || 'Saved');
   } catch (err) {
     showToast(err.message || t.errorGeneric);
   }
@@ -2419,7 +2612,145 @@ function initTimelineInteractions() {
     initLaneInsert(wrap);
   }
   initPlayheadScrub(wrap);
+  initTimelinePinchZoom(wrap);
   initPlayerControls();
+}
+
+/**
+ * Pinch (mobile) / ctrl+wheel (desktop) to change seconds width.
+ * Keeps the pinch midpoint (or cursor) anchored while zooming.
+ */
+function initTimelinePinchZoom(wrap) {
+  let pinch = null; // { dist0, zoom0, anchorSec, anchorX }
+
+  const touchDist = (a, b) => Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+  const touchMidX = (a, b) => (a.clientX + b.clientX) / 2;
+
+  const zoomAnchorAt = (clientX) => {
+    const rect = wrap.getBoundingClientRect();
+    const anchorX = clientX - rect.left;
+    const px = timelinePxPerSec();
+    const label = laneLabelPx();
+    const contentX = wrap.scrollLeft + anchorX;
+    const anchorSec = Math.max(0, (contentX - label) / Math.max(1e-6, px));
+    return { anchorSec, anchorX };
+  };
+
+  const applyPinchZoom = (nextZoom, anchor) => {
+    const z = clampTimelineZoom(nextZoom);
+    if (Math.abs(z - state.timelineZoom) < 0.0005) return;
+    state.timelineZoom = z;
+    applyTimelineZoomLive(wrap, anchor);
+  };
+
+  wrap.addEventListener(
+    'touchstart',
+    (e) => {
+      if (e.touches.length !== 2) return;
+      const d0 = Math.max(1, touchDist(e.touches[0], e.touches[1]));
+      const mid = touchMidX(e.touches[0], e.touches[1]);
+      timelinePinching = true;
+      wrap.classList.add('is-pinching');
+      pinch = {
+        dist0: d0,
+        zoom0: clampTimelineZoom(state.timelineZoom),
+        ...zoomAnchorAt(mid),
+      };
+    },
+    { passive: true }
+  );
+
+  wrap.addEventListener(
+    'touchmove',
+    (e) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      const d = Math.max(1, touchDist(e.touches[0], e.touches[1]));
+      // Keep the midpoint under the fingers while zooming.
+      const rect = wrap.getBoundingClientRect();
+      pinch.anchorX = touchMidX(e.touches[0], e.touches[1]) - rect.left;
+      applyPinchZoom(pinch.zoom0 * (d / pinch.dist0), pinch);
+    },
+    { passive: false }
+  );
+
+  const endPinch = () => {
+    if (!pinch && !timelinePinching) return;
+    pinch = null;
+    timelinePinching = false;
+    wrap.classList.remove('is-pinching');
+    // Full re-render settles waveforms / insert tiles at the new scale.
+    render();
+  };
+
+  wrap.addEventListener('touchend', (e) => {
+    if (e.touches.length < 2) endPinch();
+  });
+  wrap.addEventListener('touchcancel', endPinch);
+
+  wrap.addEventListener(
+    'wheel',
+    (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const factor = Math.exp(-e.deltaY * 0.01);
+      applyPinchZoom(state.timelineZoom * factor, zoomAnchorAt(e.clientX));
+      clearTimeout(wrap._zoomWheelTimer);
+      wrap._zoomWheelTimer = setTimeout(() => render(), 140);
+    },
+    { passive: false }
+  );
+
+  // iOS Safari page-zoom gestures on the timeline.
+  wrap.addEventListener('gesturestart', (e) => e.preventDefault());
+  wrap.addEventListener('gesturechange', (e) => e.preventDefault());
+}
+
+/** Live-update clip geometry after zoom without destroying the timeline DOM. */
+function applyTimelineZoomLive(wrap, anchor) {
+  const timeline = wrap.querySelector('.sb-timeline');
+  if (!timeline) return;
+
+  const px = timelinePxPerSec();
+  const end = Math.max(timelineEndSec(), TIMELINE_BASE_SEC);
+  const width = Math.ceil(end * px);
+  const label = laneLabelPx();
+
+  timeline.style.setProperty('--sb-sec', `${px}px`);
+  timeline.style.width = `${width + label}px`;
+
+  timeline.querySelectorAll('.sb-lane-track, .sb-ruler').forEach((el) => {
+    el.style.width = `${width}px`;
+  });
+
+  timeline.querySelectorAll('.sb-film-clip[data-start]').forEach((clip) => {
+    const start = Number(clip.dataset.start) || 0;
+    const dur = Math.max(0.15, Number(clip.dataset.dur) || 1);
+    const widthPx = dur * px;
+    clip.style.left = `${start * px}px`;
+    clip.style.width = `${Math.max(4, widthPx - (clip.id === 'sb-recording-clip' ? 0 : 1))}px`;
+    clip.querySelectorAll('.sb-frame-cell').forEach((cell) => {
+      cell.style.width = `${px}px`;
+    });
+  });
+
+  timeline.querySelectorAll('.sb-tick[data-sec]').forEach((tick) => {
+    tick.style.left = `${Number(tick.dataset.sec) * px}px`;
+  });
+
+  const head = document.getElementById('sb-playhead');
+  if (head) head.style.left = `${playheadLeftPx()}px`;
+
+  const tileW = Math.max(1, px * INSERT_TILE_SEC);
+  timeline.querySelectorAll('.sb-lane-insert').forEach((ghost) => {
+    if (ghost.classList.contains('is-visible') || ghost.style.width) {
+      ghost.style.width = `${tileW}px`;
+    }
+  });
+
+  if (anchor) {
+    wrap.scrollLeft = Math.max(0, anchor.anchorSec * px + label - anchor.anchorX);
+  }
 }
 
 function initPlayheadScrub(wrap) {
@@ -2430,6 +2761,7 @@ function initPlayheadScrub(wrap) {
     if (e.target.closest('.sb-playhead-btn')) return;
     if (e.target.closest('.sb-film-clip')) return;
     if (e.target.closest('[data-insert-lane]')) return;
+    if (e.target.closest('[data-scrub-start]')) return;
     const scrub = e.target.closest('[data-scrub]');
     if (!scrub) return;
     e.preventDefault();
@@ -2441,6 +2773,15 @@ function initPlayheadScrub(wrap) {
 
   wrap.querySelectorAll('[data-scrub]').forEach((el) => {
     el.addEventListener('pointerdown', scrubFromEvent);
+  });
+
+  wrap.querySelectorAll('[data-scrub-start]').forEach((el) => {
+    el.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setPlayhead(0, { stop: true });
+      startPlayback();
+    });
   });
 }
 
@@ -2642,30 +2983,73 @@ function disposePlaybackAudio() {
   state.playbackAudioEls.clear();
 }
 
+function clearPendingLaneInsert() {
+  pendingLaneInsert = null;
+}
+
+function commitLaneInsert(lane, sec, trackIndex = 1) {
+  clearPendingLaneInsert();
+  if (lane === 'audio') {
+    startAudioRecording(sec, trackIndex);
+    return;
+  }
+  if (lane === 'b_roll') {
+    insertBRollAt(sec);
+    return;
+  }
+  if (lane === 'a_roll') {
+    insertARollAt(sec);
+  }
+}
+
 function initLaneInsert(wrap) {
   if (state.recording) return;
   const px = timelinePxPerSec();
   const tileW = Math.max(1, px * INSERT_TILE_SEC);
+  const coarse = isCoarsePointer();
   const ghosts = [...wrap.querySelectorAll('.sb-lane-insert')];
+
+  const restoreGhostLabel = (ghost) => {
+    const label = ghost.querySelector('.sb-lane-insert-label');
+    if (label && ghost.dataset.insertLabel) {
+      label.textContent = ghost.dataset.insertLabel;
+    }
+    ghost.classList.remove('is-pending');
+  };
 
   const hideAllGhosts = (except = null) => {
     ghosts.forEach((g) => {
       if (g === except) return;
-      g.classList.remove('is-visible');
+      g.classList.remove('is-visible', 'is-pending');
       g.setAttribute('aria-hidden', 'true');
+      restoreGhostLabel(g);
     });
+    if (!except) clearPendingLaneInsert();
   };
 
-  const showGhost = (ghost, clientX, trackEl) => {
+  const showGhost = (ghost, sec, { pending = false, lane = 'audio' } = {}) => {
     hideAllGhosts(ghost);
-    const rect = trackEl.getBoundingClientRect();
-    const x = Math.min(Math.max(0, clientX - rect.left), Math.max(0, rect.width - tileW));
-    const sec = Math.max(0, Math.round(x / px));
     ghost.style.width = `${tileW}px`;
-    ghost.style.left = `${sec * px}px`;
-    ghost.dataset.startSec = String(sec);
+    ghost.style.left = `${Math.max(0, sec) * px}px`;
+    ghost.dataset.startSec = String(Math.max(0, sec));
     ghost.classList.add('is-visible');
     ghost.setAttribute('aria-hidden', 'false');
+    const label = ghost.querySelector('.sb-lane-insert-label');
+    if (pending && label) {
+      ghost.classList.add('is-pending');
+      label.textContent =
+        lane === 'audio'
+          ? t.tapToConfirmRecord || 'Tap again to record'
+          : t.tapToConfirmInsert || 'Tap again to add';
+    } else {
+      restoreGhostLabel(ghost);
+    }
+  };
+
+  const secFromClientX = (trackEl, clientX) => {
+    const rect = trackEl.getBoundingClientRect();
+    const x = Math.min(Math.max(0, clientX - rect.left), Math.max(0, rect.width - 1));
+    return Math.max(0, Math.round(x / px));
   };
 
   hideAllGhosts();
@@ -2677,44 +3061,63 @@ function initLaneInsert(wrap) {
     const lane = trackEl.dataset.insertLane || 'audio';
     const trackIndex = Number(trackEl.dataset.audioTrack) === 2 ? 2 : 1;
 
-    trackEl.addEventListener('pointerenter', (e) => {
-      if (e.target.closest('.sb-film-clip')) {
-        hideAllGhosts();
-        return;
-      }
-      showGhost(ghost, e.clientX, trackEl);
-    });
-    trackEl.addEventListener('pointerleave', (e) => {
-      const next = e.relatedTarget;
-      if (next && trackEl.contains(next)) return;
-      ghost.classList.remove('is-visible');
-      ghost.setAttribute('aria-hidden', 'true');
-    });
-    trackEl.addEventListener('pointermove', (e) => {
-      if (e.target.closest('.sb-film-clip')) {
-        hideAllGhosts();
-        return;
-      }
-      showGhost(ghost, e.clientX, trackEl);
-    });
+    if (!coarse) {
+      trackEl.addEventListener('pointerenter', (e) => {
+        if (e.target.closest('.sb-film-clip')) {
+          hideAllGhosts();
+          return;
+        }
+        showGhost(ghost, secFromClientX(trackEl, e.clientX), { lane });
+      });
+      trackEl.addEventListener('pointerleave', (e) => {
+        const next = e.relatedTarget;
+        if (next && trackEl.contains(next)) return;
+        if (pendingLaneInsert?.ghost === ghost) return;
+        ghost.classList.remove('is-visible', 'is-pending');
+        ghost.setAttribute('aria-hidden', 'true');
+        restoreGhostLabel(ghost);
+      });
+      trackEl.addEventListener('pointermove', (e) => {
+        if (e.target.closest('.sb-film-clip')) {
+          hideAllGhosts();
+          return;
+        }
+        showGhost(ghost, secFromClientX(trackEl, e.clientX), { lane });
+      });
+    }
+
     trackEl.addEventListener('click', (e) => {
       if (state.recording) return;
       if (e.target.closest('.sb-film-clip')) return;
+      e.preventDefault();
+
+      // Second tap on the pending ghost confirms insert/record.
+      if (
+        coarse &&
+        pendingLaneInsert &&
+        pendingLaneInsert.ghost === ghost &&
+        (e.target === ghost || ghost.contains(e.target))
+      ) {
+        commitLaneInsert(
+          pendingLaneInsert.lane,
+          pendingLaneInsert.sec,
+          pendingLaneInsert.track
+        );
+        hideAllGhosts();
+        return;
+      }
+
+      const sec = secFromClientX(trackEl, e.clientX);
+
+      // Touch devices: first tap only reveals the + marker.
+      if (coarse) {
+        pendingLaneInsert = { lane, track: trackIndex, sec, ghost };
+        showGhost(ghost, sec, { pending: true, lane });
+        return;
+      }
+
       hideAllGhosts();
-      const rect = trackEl.getBoundingClientRect();
-      const x = Math.min(Math.max(0, e.clientX - rect.left), Math.max(0, rect.width - 1));
-      const sec = Math.max(0, Math.round(x / px));
-      if (lane === 'audio') {
-        startAudioRecording(sec, trackIndex);
-        return;
-      }
-      if (lane === 'b_roll') {
-        insertBRollAt(sec);
-        return;
-      }
-      if (lane === 'a_roll') {
-        insertARollAt(sec);
-      }
+      commitLaneInsert(lane, sec, trackIndex);
     });
   });
 }
@@ -2832,7 +3235,7 @@ function audioTrackAtPoint(clientY) {
 }
 
 function onTimelineDragStart(e) {
-  if (!canManage || e.button != null && e.button !== 0) return;
+  if (!canManage || timelinePinching || (e.button != null && e.button !== 0)) return;
   const clip = e.currentTarget;
   const kind = clip.dataset.drag;
   const id = Number(clip.dataset.id);
@@ -2992,6 +3395,7 @@ function tickRecordingMeter() {
     const px = timelinePxPerSec();
     const widthSec = Math.max(0.15, sec);
     const widthPx = widthSec * px;
+    live.dataset.dur = String(widthSec);
     live.style.width = `${widthPx}px`;
     const timeEl = live.querySelector('.sb-rec-clip-time');
     if (timeEl) timeEl.textContent = `${sec.toFixed(1)}/${AUDIO_MAX_SEC}`;
@@ -3268,7 +3672,16 @@ window.addEventListener('resize', () => {
   timelineResizeTimer = setTimeout(() => render(), 120);
 });
 
+/** Block iOS Safari page pinch-zoom (viewport user-scalable is ignored there). */
+function lockMobilePageZoom() {
+  const block = (e) => e.preventDefault();
+  document.addEventListener('gesturestart', block, { passive: false });
+  document.addEventListener('gesturechange', block, { passive: false });
+  document.addEventListener('gestureend', block, { passive: false });
+}
+
 async function boot() {
+  lockMobilePageZoom();
   const slug = cfg.initialBoardSlug || parseBoardSlugFromLocation();
   if (slug) {
     await openBoardBySlug(slug, { push: false });

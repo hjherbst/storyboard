@@ -37,7 +37,7 @@ $i18n = array(
 	'noBoards'                   => __( 'No boards yet. Create your first storyboard.', 'storyboards' ),
 	'noScenes'                   => __( 'No scenes yet. Add your first shot.', 'storyboards' ),
 	'addScene'                   => __( 'Add scene', 'storyboards' ),
-	'list'                       => __( 'List', 'storyboards' ),
+	'list'                       => __( 'Board', 'storyboards' ),
 	'timeline'                   => __( 'Timeline', 'storyboards' ),
 	'selectScenes'               => __( 'Select', 'storyboards' ),
 	'doneSelecting'              => __( 'Done', 'storyboards' ),
@@ -65,7 +65,7 @@ $i18n = array(
 	'useSelectedPhoto'           => __( 'Use photo', 'storyboards' ),
 	'mediaLibraryUnavailable'    => __( 'Media library is not available.', 'storyboards' ),
 	'imagesOnly'                 => __( 'Only photos are allowed (JPEG, PNG, or WebP). Videos cannot be uploaded.', 'storyboards' ),
-	'back'                       => __( 'Back', 'storyboards' ),
+	'back'                       => __( 'All', 'storyboards' ),
 	'total'                      => __( 'Total', 'storyboards' ),
 	'scenes'                     => __( 'scenes', 'storyboards' ),
 	'sceneOne'                   => __( '1 scene', 'storyboards' ),
@@ -81,6 +81,9 @@ $i18n = array(
 	'recordAudio'                => __( 'Record', 'storyboards' ),
 	'stopRecording'              => __( 'Stop', 'storyboards' ),
 	'voiceOver'                  => __( 'Voice over', 'storyboards' ),
+	'tapToConfirmInsert'         => __( 'Tap again to add', 'storyboards' ),
+	'tapToConfirmRecord'         => __( 'Tap again to record', 'storyboards' ),
+	'addAtPlayhead'              => __( 'Add at playhead', 'storyboards' ),
 	'recording'                  => __( 'Recording…', 'storyboards' ),
 	'recordingProgress'          => __( '%1$s / %2$d sec', 'storyboards' ),
 	'micDenied'                  => __( 'Microphone access was denied.', 'storyboards' ),
@@ -96,6 +99,7 @@ $i18n = array(
 	'previewEmpty'               => __( 'No scene at playhead', 'storyboards' ),
 	'playPreview'                => __( 'Play', 'storyboards' ),
 	'pausePreview'               => __( 'Pause', 'storyboards' ),
+	'playFromStart'              => __( 'Play from start', 'storyboards' ),
 	'setPlayhead'                => __( 'Set playhead', 'storyboards' ),
 	'previousScene'              => __( 'Previous scene', 'storyboards' ),
 	'nextScene'                  => __( 'Next scene', 'storyboards' ),
@@ -103,6 +107,8 @@ $i18n = array(
 	'swipeScenes'                => __( 'Swipe for previous or next scene', 'storyboards' ),
 	'saving'                     => __( 'Saving…', 'storyboards' ),
 	'boardMenu'                  => __( 'Board options', 'storyboards' ),
+	'renameBoard'                => __( 'Rename', 'storyboards' ),
+	'boardRenamed'               => __( 'Board renamed', 'storyboards' ),
 	'publicBoard'                => __( 'Public link', 'storyboards' ),
 	'makePublic'                 => __( 'Make public', 'storyboards' ),
 	'makePrivate'                => __( 'Make private', 'storyboards' ),
@@ -121,7 +127,7 @@ $i18n = array(
 <html <?php language_attributes(); ?>>
 <head>
 	<meta charset="<?php bloginfo( 'charset' ); ?>">
-	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 	<meta name="robots" content="noindex, nofollow">
 	<meta name="googlebot" content="noindex, nofollow">
 	<meta name="theme-color" content="#ffffff">

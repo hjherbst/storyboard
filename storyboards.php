@@ -3,7 +3,7 @@
  * Plugin Name:       Storyboards
  * Plugin URI:        https://strgl.de
  * Description:       Mobile-first storyboards for video production. Collect shots, scripts, and reference photos.
- * Version:           1.0.53
+ * Version:           1.0.59
  * Requires at least: 6.0
  * Requires PHP:      8.0
  * Author:            STRGL
@@ -19,7 +19,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'STORYBOARDS_VERSION', '1.0.53' );
+define( 'STORYBOARDS_VERSION', '1.0.59' );
 define( 'STORYBOARDS_FILE', __FILE__ );
 define( 'STORYBOARDS_PATH', plugin_dir_path( __FILE__ ) );
 define( 'STORYBOARDS_URL', plugin_dir_url( __FILE__ ) );
