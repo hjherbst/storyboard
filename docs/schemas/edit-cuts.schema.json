@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://storyboards.local/schemas/edit-cuts.schema.json",
+  "title": "storyboards.runia.edit_cuts",
+  "description": "Tim Runia 7 cuts: intentional transitions that serve the moment.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "cuts"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "storyboards.runia.edit_cuts"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "principle": {
+      "type": "string",
+      "description": "Do not force all seven cuts into one video; pick what the moment needs."
+    },
+    "cuts": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/cutItem" }
+    },
+    "pace_map": {
+      "type": "array",
+      "description": "Optional tempo regions across the timeline.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from_scene_id", "to_scene_id", "tempo"],
+        "properties": {
+          "from_scene_id": { "type": "integer" },
+          "to_scene_id": { "type": "integer" },
+          "tempo": {
+            "type": "string",
+            "enum": ["slow", "medium", "fast"]
+          },
+          "emotion_intent": {
+            "type": "string",
+            "enum": ["smooth", "surprise", "energy", "calm", "tension", "release"]
+          },
+          "notes": { "type": "string" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "cutType": {
+      "type": "string",
+      "enum": ["flow", "smash", "jump", "action", "wmc", "match", "pace"]
+    },
+    "motionVector": {
+      "type": "string",
+      "enum": ["up", "down", "left", "right", "in", "out", "none"]
+    },
+    "audioBehavior": {
+      "type": "string",
+      "enum": ["continue", "cut_out", "hit_beat"]
+    },
+    "emotionIntent": {
+      "type": "string",
+      "enum": ["smooth", "surprise", "energy", "calm", "tension", "release"]
+    },
+    "cutItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from_scene_id", "to_scene_id", "cut_type"],
+      "properties": {
+        "id": { "type": "string" },
+        "from_scene_id": { "type": "integer" },
+        "to_scene_id": { "type": "integer" },
+        "cut_type": { "$ref": "#/definitions/cutType" },
+        "motion_vector": { "$ref": "#/definitions/motionVector" },
+        "keep_eye_line": {
+          "type": "boolean",
+          "description": "Keep subject/eyes in similar screen position across the cut."
+        },
+        "audio_behavior": { "$ref": "#/definitions/audioBehavior" },
+        "emotion_intent": { "$ref": "#/definitions/emotionIntent" },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

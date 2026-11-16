@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://storyboards.local/schemas/guardrails.schema.json",
+  "title": "storyboards.runia.guardrails",
+  "description": "Tim Runia 21 mistakes as coaching checks (warn/info by default, error only when critical).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "findings"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "storyboards.runia.guardrails"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/finding" }
+    },
+    "catalog": {
+      "type": "array",
+      "description": "Optional embedded catalog of known mistake ids.",
+      "items": { "$ref": "#/definitions/catalogEntry" }
+    }
+  },
+  "definitions": {
+    "severity": {
+      "type": "string",
+      "enum": ["story", "shoot", "edit", "process"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["error", "warn", "info"]
+    },
+    "mistakeId": {
+      "type": "string",
+      "enum": [
+        "ignoring_story",
+        "overcomplicating",
+        "holding_script_too_tight",
+        "filming_too_much",
+        "not_enough_coverage",
+        "no_shotlist",
+        "watching_tutorials_instead",
+        "overusing_effects",
+        "not_reviewing_on_set",
+        "no_backup",
+        "forgetting_audio",
+        "not_organizing_edit",
+        "editing_is_just_finishing",
+        "ignoring_own_taste",
+        "trying_masterpiece",
+        "losing_momentum",
+        "never_sharing",
+        "comparing_to_highlights",
+        "not_asking_for_help",
+        "ignoring_feedback",
+        "losing_joy"
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "severity", "message"],
+      "properties": {
+        "id": { "$ref": "#/definitions/mistakeId" },
+        "severity": { "$ref": "#/definitions/severity" },
+        "severity": { "$ref": "#/definitions/severity" },
+        "message": { "type": "string" },
+        "fix": { "type": "string" },
+        "related_scene_ids": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "related_core_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["situation", "desire", "conflict", "change", "result"]
+          }
+        }
+      }
+    },
+    "catalogEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "title"],
+      "properties": {
+        "id": { "$ref": "#/definitions/mistakeId" },
+        "severity": { "$ref": "#/definitions/severity" },
+        "title": { "type": "string" },
+        "default_severity": { "$ref": "#/definitions/severity" },
+        "summary": { "type": "string" }
+      }
+    }
+  }
+}

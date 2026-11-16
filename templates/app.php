@@ -116,12 +116,22 @@ $i18n = array(
 	'copyLink'                   => __( 'Copy link', 'storyboards' ),
 	'linkCopied'                 => __( 'Link copied', 'storyboards' ),
 	'viewOnly'                   => __( 'View only', 'storyboards' ),
+	'accountMenu'                => __( 'Account', 'storyboards' ),
+	'logIn'                      => __( 'Log in', 'storyboards' ),
+	'logOut'                     => __( 'Log out', 'storyboards' ),
+	'dashboard'                  => __( 'Dashboard', 'storyboards' ),
 	'exportPremiere'             => __( 'Export Premiere', 'storyboards' ),
 	'exportFcp'                  => __( 'Export Final Cut', 'storyboards' ),
 	'exportFcpMedia'             => __( 'Export Final Cut + Media', 'storyboards' ),
 	'exportDone'                 => __( 'Export downloaded', 'storyboards' ),
 	'exportEmpty'                => __( 'Add at least one A-roll scene before exporting.', 'storyboards' ),
 );
+
+$return_slug = Storyboards_Rewrite::requested_board_slug();
+$return_url  = $return_slug
+	? Storyboards_Rewrite::board_url( $return_slug )
+	: Storyboards_Rewrite::app_url();
+$is_logged_in = is_user_logged_in();
 
 ?><!DOCTYPE html>
 <html <?php language_attributes(); ?>>
@@ -150,6 +160,10 @@ $i18n = array(
 				'appBase'          => Storyboards_Rewrite::app_url(),
 				'initialBoardSlug' => Storyboards_Rewrite::requested_board_slug(),
 				'canManage'        => Storyboards_Rewrite::can_manage(),
+				'isLoggedIn'       => $is_logged_in,
+				'loginUrl'         => wp_login_url( $return_url ),
+				'logoutUrl'        => wp_logout_url( $return_url ),
+				'dashboardUrl'     => admin_url(),
 				'assetVer'         => $asset_ver,
 				'i18n'             => $i18n,
 			)

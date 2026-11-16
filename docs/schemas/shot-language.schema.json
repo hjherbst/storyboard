@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://storyboards.local/schemas/shot-language.schema.json",
+  "title": "storyboards.runia.shot_language",
+  "description": "Tim Runia 9 shots (+ bonus) catalog and shotlist payload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "shots"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "storyboards.runia.shot_language"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "coverage_hint": {
+      "type": "string",
+      "description": "Default coverage guidance, e.g. prefer wide→medium→close for clarity."
+    },
+    "shots": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/shotItem" }
+    }
+  },
+  "definitions": {
+    "coreKey": {
+      "type": "string",
+      "enum": ["situation", "desire", "conflict", "change", "result"]
+    },
+    "shotType": {
+      "type": "string",
+      "enum": [
+        "wide",
+        "medium",
+        "close",
+        "ots",
+        "pov",
+        "tracking",
+        "movement_in_frame",
+        "push",
+        "walk_away",
+        "angle_high",
+        "angle_low",
+        "snorricam"
+      ]
+    },
+    "role": {
+      "type": "string",
+      "enum": ["a_roll", "b_roll", "voiceover"]
+    },
+    "pushDirection": {
+      "type": "string",
+      "enum": ["in", "out", "none"]
+    },
+    "shotItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "shot_type", "core_key", "purpose"],
+      "properties": {
+        "id": { "type": "string" },
+        "shot_type": { "$ref": "#/definitions/shotType" },
+        "core_key": { "$ref": "#/definitions/coreKey" },
+        "purpose": {
+          "type": "string",
+          "description": "Why this shot exists for the story."
+        },
+        "subject": { "type": "string" },
+        "action": { "type": "string" },
+        "notes_solo": {
+          "type": "string",
+          "description": "Tips for filming alone."
+        },
+        "suggested_duration_sec": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 600
+        },
+        "role": { "$ref": "#/definitions/role" },
+        "push_direction": { "$ref": "#/definitions/pushDirection" },
+        "image_prompt": {
+          "type": "string",
+          "description": "Optional still / AI image prompt for reference."
+        },
+        "sort_order": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "linked_scene_id": {
+          "type": ["integer", "null"],
+          "description": "Set after apply-shotlist creates/updates a scene."
+        }
+      }
+    }
+  }
+}

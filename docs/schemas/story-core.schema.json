@@ -1,0 +1,126 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://storyboards.local/schemas/story-core.schema.json",
+  "title": "storyboards.runia.story_core",
+  "description": "Tim Runia 5-Line Story Method: emotional core before gear, shots, or edit.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "context", "core"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "storyboards.runia.story_core"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "method": { "type": "string", "const": "five_line" },
+        "author": { "type": "string", "const": "tim_runia" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["raw_brief"],
+      "properties": {
+        "topic": { "type": "string" },
+        "audience": { "type": "string" },
+        "format": {
+          "type": "string",
+          "enum": ["youtube", "client", "doc", "other"]
+        },
+        "tone": { "type": "string" },
+        "protagonist": { "type": "string" },
+        "raw_brief": { "type": "string" },
+        "answers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "question", "answer"],
+            "properties": {
+              "id": { "type": "string" },
+              "question": { "type": "string" },
+              "answer": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "core": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["situation", "desire", "conflict", "change", "result"],
+      "properties": {
+        "situation": { "$ref": "#/definitions/coreLine" },
+        "desire": { "$ref": "#/definitions/coreLine" },
+        "conflict": { "$ref": "#/definitions/coreLine" },
+        "change": { "$ref": "#/definitions/coreLine" },
+        "result": { "$ref": "#/definitions/coreLine" }
+      }
+    },
+    "expansion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "lines"],
+      "properties": {
+        "level": {
+          "type": "integer",
+          "minimum": 5,
+          "description": "Target line count (5, 10, 20, …)."
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "core_key", "text"],
+            "properties": {
+              "id": { "type": "string" },
+              "core_key": { "$ref": "#/definitions/coreKey" },
+              "text": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "complete": { "type": "boolean" },
+        "missing": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "coreKey": {
+      "type": "string",
+      "enum": ["situation", "desire", "conflict", "change", "result"]
+    },
+    "coreLine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string" },
+        "beats": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -36,5 +36,6 @@ final class Storyboards_Plugin {
 		( new Storyboards_CPT() )->register_hooks();
 		( new Storyboards_Rewrite() )->register_hooks();
 		( new Storyboards_REST() )->register_hooks();
+		( new Storyboards_Admin() )->register_hooks();
 	}
 }

@@ -27,6 +27,19 @@ final class Storyboards_Rewrite {
 		add_action( 'wp_enqueue_scripts', array( __CLASS__, 'enqueue_assets' ), 20 );
 		add_action( 'template_redirect', array( __CLASS__, 'template_redirect' ) );
 		add_action( 'admin_bar_menu', array( __CLASS__, 'admin_bar_link' ), 80 );
+		add_filter( 'show_admin_bar', array( __CLASS__, 'hide_admin_bar_on_app' ) );
+	}
+
+	/**
+	 * Hide the WP admin bar inside the Storyboards frontend app.
+	 *
+	 * @param bool $show Whether to show the admin bar.
+	 */
+	public static function hide_admin_bar_on_app( bool $show ): bool {
+		if ( self::is_app() ) {
+			return false;
+		}
+		return $show;
 	}
 
 	/**
@@ -238,6 +251,7 @@ final class Storyboards_Rewrite {
 		status_header( 200 );
 		nocache_headers();
 		header( 'X-Robots-Tag: noindex, nofollow', true );
+		show_admin_bar( false );
 
 		include STORYBOARDS_PATH . 'templates/app.php';
 		exit;

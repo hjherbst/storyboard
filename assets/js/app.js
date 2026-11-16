@@ -6,6 +6,7 @@ const t = cfg.i18n;
 const root = document.getElementById('sb-root');
 const canManage = !!cfg.canManage;
 const readOnly = !canManage;
+const isLoggedIn = !!cfg.isLoggedIn;
 
 const state = {
   view: 'boards', // boards | board
@@ -18,6 +19,7 @@ const state = {
   selectAnchorId: null, // last plain-clicked scene for Shift+range select
   sheet: null, // null | newBoard | editBoard | editScene | editAudio | confirmDeleteBoard
   boardMenuOpen: false,
+  accountMenuOpen: false,
   pendingDeleteBoard: null, // { id, title, sceneCount, code }
   editingScene: null,
   sceneBaseline: null, // JSON snapshot for dirty checks
@@ -64,10 +66,19 @@ const TIMELINE_BASE_SEC = 24; // seconds visible at zoom = 1
 const TIMELINE_ZOOM_MIN = 0.4;
 const TIMELINE_ZOOM_MAX = 4;
 let timelinePinching = false;
+/** Active timeline clip drag; aborted when a pinch-zoom starts mid-gesture. */
+let activeTimelineDrag = null;
 const waveformCache = new Map(); // clipId -> number[] peaks 0..1
 let waveformAudioCtx = null;
 /** Pending two-step insert on touch devices: { lane, track, sec, ghost }. */
 let pendingLaneInsert = null;
+
+function abortTimelineDrag() {
+  if (!activeTimelineDrag) return;
+  const session = activeTimelineDrag;
+  activeTimelineDrag = null;
+  session.abort?.();
+}
 
 function isCoarsePointer() {
   return window.matchMedia('(hover: none), (pointer: coarse)').matches;
@@ -300,6 +311,44 @@ function render() {
     hydrateAudioWaveforms();
   }
   bindBoardMenuDismiss();
+  bindAccountMenuDismiss();
+}
+
+function renderAccountMenu() {
+  const label = t.accountMenu || 'Account';
+  const icon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="12" cy="8" r="3.25"/>
+      <path d="M5.5 19.25c.9-3.1 3.2-4.75 6.5-4.75s5.6 1.65 6.5 4.75"/>
+    </svg>`;
+
+  if (!isLoggedIn) {
+    return `<div class="sb-account">
+      ${readOnly ? `<span class="sb-view-only">${esc(t.viewOnly)}</span>` : ''}
+      <a
+        class="sb-icon-btn sb-account-trigger"
+        href="${esc(cfg.loginUrl || '')}"
+        aria-label="${esc(t.logIn || 'Log in')}"
+        title="${esc(t.logIn || 'Log in')}"
+      >${icon}</a>
+    </div>`;
+  }
+
+  return `<div class="sb-menu sb-account ${state.accountMenuOpen ? 'is-open' : ''}">
+      ${readOnly ? `<span class="sb-view-only">${esc(t.viewOnly)}</span>` : ''}
+      <button
+        type="button"
+        class="sb-icon-btn sb-account-trigger"
+        data-action="toggle-account-menu"
+        aria-expanded="${state.accountMenuOpen ? 'true' : 'false'}"
+        aria-haspopup="true"
+        aria-label="${esc(label)}"
+        title="${esc(label)}"
+      >${icon}</button>
+      <div class="sb-menu-panel" role="menu">
+        <a class="sb-menu-item" href="${esc(cfg.dashboardUrl || '')}" role="menuitem">${esc(t.dashboard || 'Dashboard')}</a>
+        <a class="sb-menu-item" href="${esc(cfg.logoutUrl || '')}" role="menuitem">${esc(t.logOut || 'Log out')}</a>
+      </div>
+    </div>`;
 }
 
 function sceneCountLabel(count) {
@@ -348,7 +397,7 @@ function renderBoardsView() {
   return `
     <header class="sb-header">
       <h1>${esc(t.appTitle)}</h1>
-      ${readOnly ? `<span class="sb-view-only">${esc(t.viewOnly)}</span>` : ''}
+      <div class="sb-header-actions">${renderAccountMenu()}</div>
     </header>
     <main class="sb-main">${state.loading ? `<p class="sb-loading">…</p>` : list}</main>
   `;
@@ -425,7 +474,7 @@ function renderBoardView() {
           </button>
         </div>
       </div>`
-    : `<span class="sb-view-only">${esc(t.viewOnly)}</span>`;
+    : '';
 
   const backLink = canManage
     ? `<button type="button" class="sb-nav-back" data-action="back">${esc(t.back)}</button>`
@@ -444,7 +493,7 @@ function renderBoardView() {
           <span class="sb-dur">${esc(t.total)}: ${esc(formatTotal(total))}</span>
         </div>
       </div>
-      <div class="sb-header-end">${backLink}${boardMenu}</div>
+      <div class="sb-header-end">${backLink}${boardMenu}${renderAccountMenu()}</div>
       <div class="sb-header-tools">
         ${viewToggle}
         ${selectToggle}
@@ -1683,7 +1732,7 @@ function bindOverlayDismiss() {
 
 function bindBoardMenuDismiss() {
   if (!state.boardMenuOpen) return;
-  const menu = root.querySelector('.sb-menu');
+  const menu = root.querySelector('.sb-menu:not(.sb-account)');
   if (!menu) return;
 
   const onPointerDown = (e) => {
@@ -1695,6 +1744,24 @@ function bindBoardMenuDismiss() {
   };
 
   // Defer so the opening click does not immediately close the menu.
+  setTimeout(() => {
+    document.addEventListener('pointerdown', onPointerDown, true);
+  }, 0);
+}
+
+function bindAccountMenuDismiss() {
+  if (!state.accountMenuOpen) return;
+  const menu = root.querySelector('.sb-account.sb-menu');
+  if (!menu) return;
+
+  const onPointerDown = (e) => {
+    if (menu.contains(e.target)) return;
+    document.removeEventListener('pointerdown', onPointerDown, true);
+    if (!state.accountMenuOpen) return;
+    state.accountMenuOpen = false;
+    render();
+  };
+
   setTimeout(() => {
     document.addEventListener('pointerdown', onPointerDown, true);
   }, 0);
@@ -1901,6 +1968,14 @@ async function onActionClick(e) {
 
   if (action === 'toggle-board-menu') {
     state.boardMenuOpen = !state.boardMenuOpen;
+    if (state.boardMenuOpen) state.accountMenuOpen = false;
+    render();
+    return;
+  }
+
+  if (action === 'toggle-account-menu') {
+    state.accountMenuOpen = !state.accountMenuOpen;
+    if (state.accountMenuOpen) state.boardMenuOpen = false;
     render();
     return;
   }
@@ -2647,6 +2722,8 @@ function initTimelinePinchZoom(wrap) {
     'touchstart',
     (e) => {
       if (e.touches.length !== 2) return;
+      // First finger may already be dragging a clip (esp. audio track-hop).
+      abortTimelineDrag();
       const d0 = Math.max(1, touchDist(e.touches[0], e.touches[1]));
       const mid = touchMidX(e.touches[0], e.touches[1]);
       timelinePinching = true;
@@ -3241,10 +3318,13 @@ function onTimelineDragStart(e) {
   const id = Number(clip.dataset.id);
   if (!kind || !id) return;
 
+  abortTimelineDrag();
+
   const px = timelinePxPerSec();
   const startX = e.clientX;
   const startY = e.clientY;
-  const originLeft = parseFloat(clip.style.left) || 0;
+  const originLeft = parseFloat(clip.style.left) || Number(clip.dataset.start) * px || 0;
+  const originParent = clip.parentElement;
   const originTrack =
     kind === 'audio'
       ? Number(clip.closest('[data-audio-track]')?.dataset.audioTrack) === 2
@@ -3253,10 +3333,44 @@ function onTimelineDragStart(e) {
       : null;
   let moved = false;
   let hoverTrack = originTrack;
+  let aborted = false;
   clip.setPointerCapture?.(e.pointerId);
   clip.classList.add('is-dragging');
 
+  const cleanup = () => {
+    clip.releasePointerCapture?.(e.pointerId);
+    clip.classList.remove('is-dragging');
+    document.querySelectorAll('[data-audio-track].is-drop-target').forEach((el) => {
+      el.classList.remove('is-drop-target');
+    });
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
+    if (activeTimelineDrag?.id === id) activeTimelineDrag = null;
+  };
+
+  const restoreOrigin = () => {
+    if (originParent && clip.parentElement !== originParent) {
+      originParent.appendChild(clip);
+    }
+    const start = Number(clip.dataset.start) || 0;
+    clip.style.left = `${start * timelinePxPerSec()}px`;
+  };
+
+  const abort = () => {
+    if (aborted) return;
+    aborted = true;
+    restoreOrigin();
+    cleanup();
+  };
+
+  activeTimelineDrag = { id, abort };
+
   const onMove = (ev) => {
+    if (aborted || timelinePinching) {
+      abort();
+      return;
+    }
     const dx = ev.clientX - startX;
     const dy = ev.clientY - startY;
     if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
@@ -3267,7 +3381,9 @@ function onTimelineDragStart(e) {
     if (kind === 'audio') {
       const nextTrack = audioTrackAtPoint(ev.clientY) || originTrack;
       hoverTrack = nextTrack;
-      const home = clip.closest('[data-audio-track]');
+      const home = originParent?.matches?.('[data-audio-track]')
+        ? originParent
+        : clip.closest('[data-audio-track]');
       const homeTrack = Number(home?.dataset.audioTrack) === 2 ? 2 : 1;
       if (nextTrack && nextTrack !== homeTrack) {
         const target = document.querySelector(`[data-audio-track="${nextTrack}"]`);
@@ -3284,14 +3400,11 @@ function onTimelineDragStart(e) {
   };
 
   const onUp = async (ev) => {
-    clip.releasePointerCapture?.(ev.pointerId);
-    clip.classList.remove('is-dragging');
-    document.querySelectorAll('[data-audio-track].is-drop-target').forEach((el) => {
-      el.classList.remove('is-drop-target');
-    });
-    window.removeEventListener('pointermove', onMove);
-    window.removeEventListener('pointerup', onUp);
-    window.removeEventListener('pointercancel', onUp);
+    if (aborted || timelinePinching) {
+      abort();
+      return;
+    }
+    cleanup();
 
     if (!moved) return;
     clip.dataset.didDrag = '1';

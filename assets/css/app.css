@@ -104,6 +104,24 @@ html {
   white-space: nowrap;
 }
 
+.sb-account {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
+a.sb-icon-btn {
+  text-decoration: none;
+  color: inherit;
+}
+
+a.sb-menu-item {
+  display: block;
+  text-decoration: none;
+  box-sizing: border-box;
+}
+
 .sb-header-actions {
   display: inline-flex;
   align-items: center;
@@ -953,6 +971,21 @@ html {
   box-shadow:
     0 0 0 2px var(--sb-bg),
     0 1px 2px color-mix(in srgb, var(--sb-text) 18%, transparent);
+}
+
+/* Keep play/pause glyph white on the dark handle (theme buttons inherit dark text). */
+.sb-playhead-btn,
+.sb-playhead-btn.is-playing,
+.sb-playhead-btn:hover,
+.sb-playhead-btn:focus-visible {
+  color: #fff;
+}
+
+.sb-playhead-btn .sb-playhead-icon,
+.sb-playhead-btn .sb-playhead-icon path,
+.sb-playhead-btn .sb-playhead-icon rect {
+  color: #fff;
+  fill: #fff;
 }
 
 .sb-playhead-btn::after {

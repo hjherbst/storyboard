@@ -1,0 +1,51 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://storyboards.local/schemas/pipeline.schema.json",
+  "title": "storyboards.runia.pipeline",
+  "description": "Root pipeline object stored per storyboard board.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "version", "board_id", "status"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "storyboards.runia.pipeline"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "board_id": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "story_core": {
+      "$ref": "story-core.schema.json"
+    },
+    "shotlist": {
+      "$ref": "shot-language.schema.json"
+    },
+    "edit_plan": {
+      "$ref": "edit-cuts.schema.json"
+    },
+    "guardrails": {
+      "$ref": "guardrails.schema.json"
+    },
+    "status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "complete"],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": ["intake", "core", "expand", "shots", "cuts", "done"]
+        },
+        "complete": { "type": "boolean" },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}
