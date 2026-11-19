@@ -107,6 +107,16 @@ final class Storyboards_REST {
 
 		register_rest_route(
 			self::NAMESPACE,
+			'/boards/(?P<id>\d+)/cover',
+			array(
+				'methods'             => WP_REST_Server::CREATABLE,
+				'callback'            => array( $this, 'upload_board_cover' ),
+				'permission_callback' => array( $this, 'can_manage' ),
+			)
+		);
+
+		register_rest_route(
+			self::NAMESPACE,
 			'/boards/(?P<id>\d+)/export',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
@@ -491,6 +501,111 @@ final class Storyboards_REST {
 			update_post_meta( (int) $board->ID, Storyboards_CPT::META_PUBLIC, (bool) $body['is_public'] ? 1 : 0 );
 		}
 
+		if ( array_key_exists( 'cover_image_id', $body ) ) {
+			$cover_id = $body['cover_image_id'];
+			if ( null === $cover_id || '' === $cover_id || 0 === (int) $cover_id ) {
+				$this->clear_board_cover( (int) $board->ID );
+			} else {
+				$set = $this->set_board_cover( (int) $board->ID, (int) $cover_id );
+				if ( is_wp_error( $set ) ) {
+					return $set;
+				}
+			}
+		}
+
+		$post = get_post( (int) $board->ID );
+		return new WP_REST_Response( $this->format_board( $post ), 200 );
+	}
+
+	/**
+	 * POST /boards/{id}/cover — upload a cover still.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 */
+	public function upload_board_cover( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$board = $this->get_board_post( (int) $request['id'] );
+		if ( is_wp_error( $board ) ) {
+			return $board;
+		}
+
+		$files = $request->get_file_params();
+		if ( empty( $files['file'] ) || ! is_array( $files['file'] ) ) {
+			return new WP_Error( 'storyboards_no_file', __( 'No image uploaded.', 'storyboards' ), array( 'status' => 400 ) );
+		}
+
+		$file = $files['file'];
+		if ( ! empty( $file['error'] ) ) {
+			return new WP_Error( 'storyboards_upload_error', __( 'Upload failed.', 'storyboards' ), array( 'status' => 400 ) );
+		}
+
+		if ( (int) $file['size'] > self::MAX_IMAGE_BYTES ) {
+			return new WP_Error(
+				'storyboards_file_too_large',
+				__( 'Image exceeds the 100KB server limit.', 'storyboards' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$check   = wp_check_filetype_and_ext( $file['tmp_name'], $file['name'] );
+		$mime    = $check['type'] ?: ( $file['type'] ?? '' );
+		$allowed = array( 'image/webp', 'image/jpeg', 'image/png' );
+
+		if ( is_string( $mime ) && str_starts_with( $mime, 'video/' ) ) {
+			return new WP_Error(
+				'storyboards_video_not_allowed',
+				__( 'Videos cannot be uploaded to storyboards. Please use a photo (JPEG, PNG, or WebP).', 'storyboards' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		if ( ! in_array( $mime, $allowed, true ) ) {
+			return new WP_Error(
+				'storyboards_invalid_type',
+				__( 'Only JPEG, PNG, or WebP photos are allowed. Videos cannot be uploaded.', 'storyboards' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		require_once ABSPATH . 'wp-admin/includes/file.php';
+		require_once ABSPATH . 'wp-admin/includes/media.php';
+		require_once ABSPATH . 'wp-admin/includes/image.php';
+
+		$overrides = array(
+			'test_form' => false,
+			'mimes'     => array(
+				'webp' => 'image/webp',
+				'jpg'  => 'image/jpeg',
+				'jpeg' => 'image/jpeg',
+				'png'  => 'image/png',
+			),
+		);
+
+		$upload = wp_handle_upload( $file, $overrides );
+		if ( isset( $upload['error'] ) ) {
+			return new WP_Error( 'storyboards_upload_error', $upload['error'], array( 'status' => 500 ) );
+		}
+
+		$attachment = array(
+			'post_mime_type' => $upload['type'],
+			'post_title'     => sanitize_file_name( pathinfo( $upload['file'], PATHINFO_FILENAME ) ),
+			'post_content'   => '',
+			'post_status'    => 'inherit',
+			'post_parent'    => (int) $board->ID,
+		);
+
+		$attach_id = wp_insert_attachment( $attachment, $upload['file'], (int) $board->ID, true );
+		if ( is_wp_error( $attach_id ) ) {
+			return $attach_id;
+		}
+
+		$meta = wp_generate_attachment_metadata( $attach_id, $upload['file'] );
+		wp_update_attachment_metadata( $attach_id, $meta );
+
+		$set = $this->set_board_cover( (int) $board->ID, (int) $attach_id );
+		if ( is_wp_error( $set ) ) {
+			return $set;
+		}
+
 		$post = get_post( (int) $board->ID );
 		return new WP_REST_Response( $this->format_board( $post ), 200 );
 	}
@@ -521,6 +636,8 @@ final class Storyboards_REST {
 		}
 
 		$wpdb->delete( $table, array( 'storyboard_id' => $board_id ), array( '%d' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+
+		$this->clear_board_cover( $board_id );
 
 		$deleted = wp_delete_post( $board_id, true );
 		if ( ! $deleted ) {
@@ -1076,6 +1193,14 @@ final class Storyboards_REST {
 			);
 		}
 
+		$cover_id  = (int) get_post_thumbnail_id( $post );
+		$cover_url = null;
+		if ( $cover_id > 0 ) {
+			$cover_url = wp_get_attachment_image_url( $cover_id, 'medium' )
+				?: wp_get_attachment_url( $cover_id )
+				?: null;
+		}
+
 		return array(
 			'id'                 => (int) $post->ID,
 			'title'              => $post->post_title,
@@ -1083,11 +1208,61 @@ final class Storyboards_REST {
 			'url'                => Storyboards_Rewrite::board_url( $slug ),
 			'aspect_ratio'       => $aspect,
 			'is_public'          => Storyboards_CPT::is_board_public( (int) $post->ID ),
+			'cover_image_id'     => $cover_id > 0 ? $cover_id : null,
+			'cover_url'          => $cover_url,
 			'scene_count'        => (int) ( $stats['scene_count'] ?? 0 ),
 			'total_duration_sec' => (int) ( $stats['total_duration_sec'] ?? 0 ),
 			'modified'           => mysql_to_rfc3339( $post->post_modified_gmt ),
 			'created'            => mysql_to_rfc3339( $post->post_date_gmt ),
 		);
+	}
+
+	/**
+	 * Set board featured image / cover.
+	 */
+	private function set_board_cover( int $board_id, int $attachment_id ): true|WP_Error {
+		$attachment = get_post( $attachment_id );
+		if ( ! $attachment || 'attachment' !== $attachment->post_type ) {
+			return new WP_Error( 'storyboards_invalid_cover', __( 'Cover image not found.', 'storyboards' ), array( 'status' => 400 ) );
+		}
+		if ( ! wp_attachment_is_image( $attachment_id ) ) {
+			return new WP_Error(
+				'storyboards_invalid_type',
+				__( 'Only JPEG, PNG, or WebP photos are allowed. Videos cannot be uploaded.', 'storyboards' ),
+				array( 'status' => 400 )
+			);
+		}
+
+		$old_id = (int) get_post_thumbnail_id( $board_id );
+		set_post_thumbnail( $board_id, $attachment_id );
+
+		if ( $old_id > 0 && $old_id !== $attachment_id ) {
+			$this->maybe_delete_board_owned_attachment( $board_id, $old_id );
+		}
+
+		return true;
+	}
+
+	/**
+	 * Remove board cover.
+	 */
+	private function clear_board_cover( int $board_id ): void {
+		$old_id = (int) get_post_thumbnail_id( $board_id );
+		delete_post_thumbnail( $board_id );
+		if ( $old_id > 0 ) {
+			$this->maybe_delete_board_owned_attachment( $board_id, $old_id );
+		}
+	}
+
+	/**
+	 * Delete an attachment only if it belongs to this board.
+	 */
+	private function maybe_delete_board_owned_attachment( int $board_id, int $attachment_id ): void {
+		$attachment = get_post( $attachment_id );
+		if ( ! $attachment || (int) $attachment->post_parent !== $board_id ) {
+			return;
+		}
+		wp_delete_attachment( $attachment_id, true );
 	}
 
 	/**

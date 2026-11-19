@@ -46,7 +46,7 @@ final class Storyboards_CPT {
 				'publicly_queryable'  => false,
 				'capability_type'     => 'post',
 				'map_meta_cap'        => true,
-				'supports'            => array( 'title', 'author' ),
+				'supports'            => array( 'title', 'author', 'thumbnail' ),
 				'has_archive'         => false,
 				'rewrite'             => false,
 			)

@@ -13,7 +13,7 @@ const state = {
   boards: [],
   board: null,
   scenes: [],
-  mode: 'list', // list | timeline
+  mode: 'list', // list | script | timeline
   selectMode: false,
   selectedSceneIds: [],
   selectAnchorId: null, // last plain-clicked scene for Shift+range select
@@ -28,6 +28,7 @@ const state = {
   boardDraft: { title: '', aspect_ratio: '16:9' },
   boardBaseline: null,
   pendingPhoto: null, // { blob, filename, previewUrl } | null
+  pendingCover: null, // { blob, filename, previewUrl } | null — preview only until uploaded
   removePhoto: false,
   loading: false,
   toastTimer: null,
@@ -288,6 +289,8 @@ function render() {
     root.insertAdjacentHTML('beforeend', renderNewBoardSheet());
   } else if (state.sheet === 'editBoard') {
     root.insertAdjacentHTML('beforeend', renderEditBoardSheet());
+  } else if (state.sheet === 'boardCover') {
+    root.insertAdjacentHTML('beforeend', renderBoardCoverSheet());
   } else if (state.sheet === 'editScene') {
     root.insertAdjacentHTML('beforeend', renderSceneSheet());
   } else if (state.sheet === 'editAudio') {
@@ -309,6 +312,10 @@ function render() {
     initTimelineInteractions();
     restoreTimelineScrollLeft(timelineScroll);
     hydrateAudioWaveforms();
+  }
+  if (canManage && state.view === 'board' && state.mode === 'script' && !state.selectMode) {
+    initScriptInlineEditors();
+    initScriptSortable();
   }
   bindBoardMenuDismiss();
   bindAccountMenuDismiss();
@@ -359,10 +366,14 @@ function sceneCountLabel(count) {
 
 function renderBoardsView() {
   const boards = state.boards
-    .map(
-      (b) => `
+    .map((b) => {
+      const cover = b.cover_url
+        ? `<img class="sb-board-cover" src="${esc(b.cover_url)}" alt="" loading="lazy" decoding="async">`
+        : '';
+      return `
         <button type="button" class="sb-board-tile" data-action="open-board" data-id="${b.id}">
-          <div class="sb-board-frame ${aspectClass(b.aspect_ratio)}" aria-hidden="true">
+          <div class="sb-board-frame ${aspectClass(b.aspect_ratio)}${b.cover_url ? ' has-cover' : ''}" aria-hidden="true">
+            ${cover}
             <div class="sb-frame-badges">
               <span class="sb-frame-badge">${esc(b.aspect_ratio)}</span>
               <span class="sb-frame-badge">${esc(formatTotal(b.total_duration_sec || 0))}</span>
@@ -372,8 +383,8 @@ function renderBoardsView() {
             <strong>${esc(b.title)}</strong>
             <p class="sb-board-stats-line">${esc(sceneCountLabel(b.scene_count))}</p>
           </div>
-        </button>`
-    )
+        </button>`;
+    })
     .join('');
 
   const addTile = canManage
@@ -410,8 +421,15 @@ function renderBoardView() {
   }
 
   const total = totalDuration(state.scenes);
-  const viewMode = state.selectMode ? 'list' : state.mode;
-  const body = viewMode === 'timeline' ? renderTimeline() : renderSceneList();
+  // Select works in Board + Script; Timeline falls back to Board while selecting.
+  const viewMode =
+    state.selectMode && state.mode === 'timeline' ? 'list' : state.mode;
+  const body =
+    viewMode === 'timeline'
+      ? renderTimeline()
+      : viewMode === 'script'
+        ? renderScriptView()
+        : renderSceneList();
 
   const selectToggle = canManage && state.scenes.length
     ? `<button
@@ -421,10 +439,24 @@ function renderBoardView() {
       >${esc(state.selectMode ? t.doneSelecting : t.selectScenes)}</button>`
     : '';
 
+  const copyAllScriptsBtn =
+    !state.selectMode && state.mode === 'script' && state.scenes.length
+      ? `<button
+          type="button"
+          class="sb-btn sb-script-copy-all"
+          data-action="copy-all-scripts"
+          title="${esc(t.copyAllScripts || 'Copy all scripts')}"
+        >
+          ${copyIconSvg()}
+          <span>${esc(t.copyAllScripts || 'Copy all scripts')}</span>
+        </button>`
+      : '';
+
   const viewToggle = state.selectMode
     ? ''
     : `<div class="sb-toggle" role="group" aria-label="View mode">
         <button type="button" data-action="mode" data-mode="list" class="${state.mode === 'list' ? 'is-active' : ''}">${esc(t.list)}</button>
+        <button type="button" data-action="mode" data-mode="script" class="${state.mode === 'script' ? 'is-active' : ''}">${esc(t.script)}</button>
         <button type="button" data-action="mode" data-mode="timeline" class="${state.mode === 'timeline' ? 'is-active' : ''}">${esc(t.timeline)}</button>
       </div>`;
 
@@ -459,6 +491,9 @@ function renderBoardView() {
           </button>
           <button type="button" class="sb-menu-item" data-action="rename-board" role="menuitem">
             ${esc(t.renameBoard || 'Rename')}
+          </button>
+          <button type="button" class="sb-menu-item" data-action="edit-board-cover" role="menuitem">
+            ${esc(t.boardCover || 'Cover image')}
           </button>
           <button type="button" class="sb-menu-item" data-action="export-premiere" data-id="${board.id}" role="menuitem">
             ${esc(t.exportPremiere || 'Export Premiere')}
@@ -496,6 +531,7 @@ function renderBoardView() {
       <div class="sb-header-end">${backLink}${boardMenu}${renderAccountMenu()}</div>
       <div class="sb-header-tools">
         ${viewToggle}
+        ${copyAllScriptsBtn}
         ${selectToggle}
       </div>
     </header>
@@ -567,8 +603,9 @@ function renderSceneList() {
   const cards = state.scenes
     .map((s) => {
       const selected = isSceneSelected(s.id);
+      const showInsert = canManage && !selecting;
       return `
-      <li class="sb-scene-card role-${esc(s.role)}${selected ? ' is-selected' : ''}" data-id="${s.id}">
+      <li class="sb-scene-card role-${esc(s.role)}${selected ? ' is-selected' : ''}${showInsert ? ' has-insert' : ''}" data-id="${s.id}">
         ${
           selecting
             ? `<label class="sb-scene-check">
@@ -597,6 +634,7 @@ function renderSceneList() {
             <p class="sb-scene-title">${esc(s.title)}</p>
           </div>
         </button>
+        ${showInsert ? insertBetweenButton(s.id, { className: 'sb-insert-after sb-insert-after-card' }) : ''}
       </li>`;
     })
     .join('');
@@ -624,6 +662,276 @@ function renderSceneList() {
   return `<ul class="sb-scene-list ${aspectClass(aspect)} ${selecting ? 'is-selecting' : ''}" ${sortableAttr}>${cards}${addTile}</ul>`;
 }
 
+/** Calibrated speaking pace (~190 wpm): prior 2.5 wps overestimated 14s as real 11s. */
+const SPEAK_WORDS_PER_SEC = 3.2;
+
+function estimateSpeakSec(text) {
+  const words = String(text || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+  if (!words) return 0;
+  return Math.max(1, Math.round(words / SPEAK_WORDS_PER_SEC));
+}
+
+function formatSpeakEstimate(sec) {
+  if (!sec) return '';
+  const label = (t.speakEstimate || 'ca. %ds').replace('%d', String(sec));
+  return label;
+}
+
+function scriptDurLabel(script, fallbackSec) {
+  const text = String(script || '').trim();
+  if (!text) return `${fallbackSec || 3}s`;
+  return formatSpeakEstimate(estimateSpeakSec(text));
+}
+
+function copyIconSvg() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <rect x="9" y="9" width="11" height="11" rx="2"/>
+    <path d="M5 15V5a2 2 0 0 1 2-2h10"/>
+  </svg>`;
+}
+
+function liveScriptText(sceneId) {
+  const ta = root.querySelector(`.sb-script-input[data-script-id="${sceneId}"]`);
+  if (ta) return ta.value;
+  const scene = state.scenes.find((s) => Number(s.id) === Number(sceneId));
+  return scene?.script || '';
+}
+
+function collectAllScriptsText() {
+  return state.scenes
+    .map((s) => liveScriptText(s.id).trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+async function copyTextToClipboard(text) {
+  const value = String(text || '');
+  if (!value.trim()) {
+    showToast(t.noScriptToCopy || 'No script text to copy');
+    return false;
+  }
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    showToast(t.errorGeneric);
+    return false;
+  }
+}
+
+function renderScriptView() {
+  const aspect = state.board?.aspect_ratio || '16:9';
+  const selecting = state.selectMode && canManage;
+
+  if (!state.scenes.length && !canManage) {
+    return `<p class="sb-empty">${esc(t.noScenes)}</p>`;
+  }
+
+  const rows = state.scenes
+    .map((s) => {
+      const script = String(s.script || '');
+      const trimmed = script.trim();
+      const durLabel = scriptDurLabel(script, s.duration_sec);
+      const selected = isSceneSelected(s.id);
+      const action = selecting
+        ? 'toggle-scene-select'
+        : canManage
+          ? 'edit-scene'
+          : 'view-scene';
+      const notes = String(s.description || '');
+      const notesTrimmed = notes.trim();
+      const showInsert = canManage && !selecting;
+      const textCell =
+        canManage && !selecting
+          ? `<textarea
+            class="sb-script-input"
+            data-script-id="${s.id}"
+            rows="2"
+            placeholder="${esc(t.scriptPlaceholder || 'Write script…')}"
+            aria-label="${esc(t.script)}"
+          ></textarea>`
+          : trimmed
+            ? `<p>${esc(script)}</p>`
+            : `<p class="sb-script-empty">${esc(t.scriptEmpty || 'No script')}</p>`;
+      const notesCell =
+        canManage && !selecting
+          ? `<textarea
+            class="sb-script-notes-input"
+            data-notes-id="${s.id}"
+            rows="2"
+            placeholder="${esc(t.notesPlaceholder || 'Notes…')}"
+            aria-label="${esc(t.description || 'Description')}"
+          ></textarea>`
+          : notesTrimmed
+            ? `<p>${esc(notes)}</p>`
+            : `<p class="sb-script-empty">${esc(t.notesEmpty || 'No notes')}</p>`;
+      return `
+        <article class="sb-script-row role-${esc(s.role)}${selected ? ' is-selected' : ''}" data-script-row="${s.id}" data-id="${s.id}">
+          ${
+            selecting
+              ? `<label class="sb-scene-check sb-script-check">
+                  <input type="checkbox" data-action="toggle-scene-select" data-id="${s.id}" ${selected ? 'checked' : ''} />
+                  <span class="sb-sr-only">${esc(t.selectScenes)}</span>
+                </label>`
+              : canManage
+                ? `<div class="sb-script-handle" aria-label="Reorder">⠿</div>`
+                : ''
+          }
+          <button type="button" class="sb-script-shot" data-action="${action}" data-id="${s.id}">
+            <div class="sb-script-thumb ${aspectClass(aspect)}">
+              ${
+                s.image_url
+                  ? `<img src="${esc(s.image_url)}" alt="" loading="lazy" decoding="async">`
+                  : `<span class="sb-frame-placeholder" aria-hidden="true"></span>`
+              }
+            </div>
+            <div class="sb-script-shot-meta">
+              <span class="sb-script-role role-${esc(s.role)}">${esc(roleLabel(s.role))}</span>
+              <strong class="sb-script-title">${esc(s.title || t.title)}</strong>
+              <span class="sb-script-dur"${trimmed ? ` title="${esc(t.speakEstimateHint || '')}"` : ''}>${esc(durLabel)}</span>
+            </div>
+          </button>
+          <div class="sb-script-text-wrap">
+            <div class="sb-script-text">${textCell}</div>
+            ${
+              selecting
+                ? ''
+                : `<button
+              type="button"
+              class="sb-icon-btn sb-script-copy"
+              data-action="copy-scene-script"
+              data-id="${s.id}"
+              aria-label="${esc(t.copyScript || 'Copy script')}"
+              title="${esc(t.copyScript || 'Copy script')}"
+            >${copyIconSvg()}</button>`
+            }
+          </div>
+          <div class="sb-script-notes" aria-label="${esc(t.description || 'Description')}">
+            ${notesCell}
+          </div>
+          ${showInsert ? insertBetweenButton(s.id, { className: 'sb-insert-after sb-insert-after-script' }) : ''}
+        </article>`;
+    })
+    .join('');
+
+  const addRow =
+    canManage && !selecting
+      ? `<article class="sb-script-row sb-script-add">
+          <button type="button" class="sb-script-shot sb-script-add-btn" data-action="add-scene">
+            <div class="sb-script-thumb ${aspectClass(aspect)}">
+              <span class="sb-frame-placeholder sb-frame-add-icon" aria-hidden="true">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14"/>
+                </svg>
+              </span>
+            </div>
+            <div class="sb-script-shot-meta">
+              <strong class="sb-script-title">${esc(t.addScene)}</strong>
+            </div>
+          </button>
+          <div class="sb-script-text-wrap">
+            <div class="sb-script-text">
+              <p class="sb-script-empty">${esc(t.scriptPlaceholder || 'Write script…')}</p>
+            </div>
+          </div>
+          <div class="sb-script-notes">
+            <p class="sb-script-empty">${esc(t.notesPlaceholder || 'Notes…')}</p>
+          </div>
+        </article>`
+      : '';
+
+  if (!state.scenes.length && !addRow) {
+    return `<p class="sb-empty">${esc(t.noScenes)}</p>`;
+  }
+
+  const sortableAttr = canManage && !selecting ? 'id="sb-script-sortable"' : '';
+  return `<div class="sb-script-view ${selecting ? 'is-selecting' : ''}" ${sortableAttr} role="list">${rows}${addRow}</div>`;
+}
+
+function autosizeScriptField(ta) {
+  if (!ta) return;
+  const host = ta.parentElement;
+  const minH = Math.max(host?.clientHeight || 0, 48);
+  ta.style.height = '0px';
+  ta.style.height = `${Math.max(ta.scrollHeight, minH)}px`;
+}
+
+function syncScriptRowDuration(ta) {
+  const row = ta.closest('[data-script-row]');
+  const durEl = row?.querySelector('.sb-script-dur');
+  if (!durEl) return;
+  const id = Number(ta.dataset.scriptId);
+  const scene = state.scenes.find((s) => Number(s.id) === id);
+  const text = ta.value;
+  const trimmed = text.trim();
+  durEl.textContent = scriptDurLabel(text, scene?.duration_sec);
+  if (trimmed) {
+    durEl.title = t.speakEstimateHint || '';
+  } else {
+    durEl.removeAttribute('title');
+  }
+}
+
+function bindScriptField(ta, { idKey, field, onInput }) {
+  const id = Number(ta.dataset[idKey]);
+  const scene = state.scenes.find((s) => Number(s.id) === id);
+  const initial = scene?.[field] ?? '';
+  ta.value = initial;
+  ta.dataset.savedValue = initial;
+  autosizeScriptField(ta);
+
+  ta.addEventListener('input', () => {
+    autosizeScriptField(ta);
+    onInput?.(ta);
+  });
+
+  ta.addEventListener('blur', async () => {
+    const next = ta.value;
+    const prev = ta.dataset.savedValue ?? '';
+    if (next === prev) return;
+    try {
+      const updated = await api.updateScene(id, { [field]: next });
+      ta.dataset.savedValue = updated[field] ?? next;
+      state.scenes = state.scenes.map((s) =>
+        Number(s.id) === id ? { ...s, ...updated, [field]: updated[field] ?? next } : s
+      );
+      onInput?.(ta);
+    } catch (err) {
+      ta.value = prev;
+      autosizeScriptField(ta);
+      onInput?.(ta);
+      showToast(err.message || t.errorGeneric);
+    }
+  });
+}
+
+function initScriptInlineEditors() {
+  root.querySelectorAll('.sb-script-input').forEach((ta) => {
+    bindScriptField(ta, {
+      idKey: 'scriptId',
+      field: 'script',
+      onInput: syncScriptRowDuration,
+    });
+  });
+
+  root.querySelectorAll('.sb-script-notes-input').forEach((ta) => {
+    bindScriptField(ta, {
+      idKey: 'notesId',
+      field: 'description',
+    });
+  });
+
+  // After layout, remeasure so fields fill their stretched wrappers.
+  requestAnimationFrame(() => {
+    root.querySelectorAll('.sb-script-input, .sb-script-notes-input').forEach((ta) => {
+      autosizeScriptField(ta);
+    });
+  });
+}
+
 function clampTimelineZoom(z) {
   const n = Number(z);
   if (!Number.isFinite(n)) return 1;
@@ -645,6 +953,61 @@ function layoutARoll() {
       cursor += dur;
       return item;
     });
+}
+
+/** Packed A-roll time for scenes[0..index) (sort order). */
+function aRollTimeAtSortIndex(index) {
+  let t = 0;
+  const scenes = state.scenes || [];
+  const end = Math.max(0, Math.min(Number(index) || 0, scenes.length));
+  for (let i = 0; i < end; i += 1) {
+    const s = scenes[i];
+    if ((s.role || 'a_roll') !== 'a_roll') continue;
+    t += Math.max(1, Number(s.duration_sec) || 3);
+  }
+  return t;
+}
+
+/**
+ * Shift B-roll + audio that start at/after atSec by deltaSec (timeline ripple).
+ * A-roll timing follows sort order + duration packing automatically.
+ */
+async function rippleTimelineFrom(atSec, deltaSec) {
+  const at = Math.max(0, Math.round(Number(atSec) || 0));
+  const delta = Math.round(Number(deltaSec) || 0);
+  if (!delta) return;
+
+  const sceneJobs = (state.scenes || [])
+    .filter((s) => s.role === 'b_roll' && Number(s.start_sec) >= at)
+    .map((s) =>
+      api.updateScene(s.id, { start_sec: Math.max(0, Number(s.start_sec) + delta) }).then((updated) => {
+        state.scenes = state.scenes.map((row) =>
+          Number(row.id) === Number(updated.id) ? { ...row, ...updated } : row
+        );
+      })
+    );
+
+  const audioJobs = (state.audio || [])
+    .filter((a) => Number(a.start_sec) >= at)
+    .map((a) =>
+      api.updateAudio(a.id, { start_sec: Math.max(0, Number(a.start_sec) + delta) }).then((updated) => {
+        state.audio = state.audio.map((row) =>
+          Number(row.id) === Number(updated.id) ? { ...row, ...updated } : row
+        );
+      })
+    );
+
+  if (!sceneJobs.length && !audioJobs.length) return;
+  await Promise.all([...sceneJobs, ...audioJobs]);
+}
+
+function insertBetweenButton(afterId, { className = 'sb-insert-after' } = {}) {
+  const label = t.insertSceneBetween || t.insertSceneAfter || 'Insert scene here';
+  const afterAttr = afterId == null || afterId === '' ? '' : ` data-id="${esc(String(afterId))}"`;
+  return `<button type="button" class="${esc(className)}" data-action="insert-scene-after"${afterAttr} aria-label="${esc(label)}" title="${esc(label)}">
+    <span class="sb-insert-line" aria-hidden="true"></span>
+    <span class="sb-insert-plus" aria-hidden="true">+</span>
+  </button>`;
 }
 
 function layoutBRoll() {
@@ -972,7 +1335,24 @@ function renderTimeline() {
   const px = timelinePxPerSec();
   const end = Math.max(timelineEndSec(), 24);
   const width = Math.ceil(end * px);
-  const aClips = layoutARoll().map((c) => renderFilmstripClip(c, { draggable: false, kind: 'scene' })).join('');
+  const aLayout = layoutARoll();
+  const aClips = aLayout.map((c) => renderFilmstripClip(c, { draggable: false, kind: 'scene' })).join('');
+  const aJunctions = canManage && !state.recording
+    ? aLayout
+        .slice(0, -1)
+        .map((c) => {
+          const left = (c.start + c.dur) * px;
+          const label = t.insertSceneBetween || 'Insert scene here';
+          return `<button type="button"
+            class="sb-clip-insert"
+            style="left:${left}px"
+            data-action="insert-scene-after"
+            data-id="${esc(String(c.id))}"
+            aria-label="${esc(label)}"
+            title="${esc(label)}">+</button>`;
+        })
+        .join('')
+    : '';
   const bClips = layoutBRoll().map((c) => renderFilmstripClip(c, { draggable: true, kind: 'scene' })).join('');
   const canInsert = canManage && !state.recording;
 
@@ -1056,6 +1436,7 @@ function renderTimeline() {
             </div>
             <div class="sb-lane-track is-aroll${canInsert ? ' is-insertable' : ''}" style="width:${width}px" data-insert-lane="a_roll">
               ${aClips}
+              ${aJunctions}
               ${laneInsertTile('a_roll', t.aRoll || 'A-Roll')}
             </div>
           </div>
@@ -1243,6 +1624,173 @@ function renderEditBoardSheet() {
       </div>
     </div>
   `;
+}
+
+function renderBoardCoverSheet() {
+  const board = state.board || {};
+  const previewUrl = state.pendingCover?.previewUrl || board.cover_url || null;
+  const aspect = board.aspect_ratio || '16:9';
+  return `
+    <div class="sb-overlay" role="dialog" aria-modal="true">
+      <div class="sb-sheet" data-stop>
+        <div class="sb-sheet-top">
+          <button type="button" class="sb-sheet-close sb-icon-btn" data-action="close-sheet" aria-label="${esc(t.close)}">✕</button>
+        </div>
+        <h2>${esc(t.boardCover || 'Cover image')}</h2>
+        <p class="sb-muted">${esc(t.boardCoverHint || '')}</p>
+        <div class="sb-field sb-field-photo">
+          <div class="sb-photo-area">
+            <div class="sb-photo-preview ${aspectClass(aspect)}${previewUrl ? ' has-image' : ''}">
+              ${previewUrl ? `<img src="${esc(previewUrl)}" alt="">` : '<span class="sb-photo-empty" aria-hidden="true"></span>'}
+              <div class="sb-photo-actions">
+                <label class="sb-icon-btn sb-photo-action" aria-label="${esc(previewUrl ? t.changePhoto : t.addPhoto)}" title="${esc(previewUrl ? t.changePhoto : t.addPhoto)}">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="3" y="5" width="18" height="14" rx="2"/>
+                    <circle cx="8.5" cy="10" r="1.5"/>
+                    <path d="M21 16l-5.5-5.5L7 19"/>
+                  </svg>
+                  <input type="file" id="sb-cover-input" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" hidden>
+                </label>
+                <label class="sb-icon-btn sb-photo-action sb-photo-action-camera" aria-label="${esc(t.takePhoto)}" title="${esc(t.takePhoto)}">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/>
+                    <circle cx="12" cy="13.5" r="3.25"/>
+                  </svg>
+                  <input type="file" id="sb-cover-camera" accept="image/*" capture="environment" hidden>
+                </label>
+                <button type="button" class="sb-icon-btn sb-photo-action" data-action="pick-cover-media" aria-label="${esc(t.chooseFromLibrary)}" title="${esc(t.chooseFromLibrary)}">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 20h16V8H4z"/>
+                    <path d="M8 8V5h8v3"/>
+                  </svg>
+                </button>
+                ${
+                  previewUrl
+                    ? `<button type="button" class="sb-icon-btn sb-photo-action" data-action="remove-board-cover" aria-label="${esc(t.removeCover)}" title="${esc(t.removeCover)}">✕</button>`
+                    : ''
+                }
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function applyBoardCoverToState(board) {
+  if (!board) return;
+  state.board = {
+    ...state.board,
+    ...board,
+    cover_image_id: board.cover_image_id ?? null,
+    cover_url: board.cover_url || null,
+  };
+  state.boards = state.boards.map((b) =>
+    b.id === state.board.id
+      ? { ...b, cover_image_id: state.board.cover_image_id, cover_url: state.board.cover_url }
+      : b
+  );
+}
+
+function cleanupPendingCover() {
+  if (state.pendingCover?.previewUrl) {
+    URL.revokeObjectURL(state.pendingCover.previewUrl);
+  }
+  state.pendingCover = null;
+}
+
+async function persistBoardCoverFile(file) {
+  if (!state.board?.id || !file) return;
+  if (!isAllowedImageFile(file)) {
+    showToast(t.imagesOnly || t.errorGeneric);
+    return;
+  }
+  try {
+    showToast(t.compressing);
+    const result = await compressImage(file);
+    cleanupPendingCover();
+    state.pendingCover = {
+      blob: result.blob,
+      filename: result.filename,
+      previewUrl: URL.createObjectURL(result.blob),
+    };
+    render();
+    showToast(t.uploading);
+    const updated = await api.uploadBoardCover(
+      state.board.id,
+      state.pendingCover.blob,
+      state.pendingCover.filename
+    );
+    cleanupPendingCover();
+    applyBoardCoverToState(updated);
+    render();
+    showToast(t.coverSaved || 'Cover updated');
+  } catch (err) {
+    cleanupPendingCover();
+    showToast(err.message || t.errorGeneric);
+    render();
+  }
+}
+
+async function persistBoardCoverAttachment(attachmentId, previewUrl) {
+  if (!state.board?.id || !attachmentId) return;
+  try {
+    showToast(t.saving || '…');
+    const updated = await api.updateBoard(state.board.id, { cover_image_id: attachmentId });
+    applyBoardCoverToState({
+      ...updated,
+      cover_url: updated.cover_url || previewUrl || null,
+    });
+    render();
+    showToast(t.coverSaved || 'Cover updated');
+  } catch (err) {
+    showToast(err.message || t.errorGeneric);
+  }
+}
+
+function openBoardCoverLibrary() {
+  if (!window.wp?.media) {
+    showToast(t.mediaLibraryUnavailable || t.errorGeneric);
+    return;
+  }
+
+  if (!state.coverMediaFrame) {
+    state.coverMediaFrame = window.wp.media({
+      title: t.boardCover || t.chooseFromLibrary,
+      button: { text: t.useSelectedPhoto || t.save },
+      library: { type: 'image' },
+      multiple: false,
+    });
+
+    state.coverMediaFrame.on('uploader:ready', () => {
+      const uploader = state.coverMediaFrame?.uploader?.uploader;
+      if (!uploader?.setOption) return;
+      uploader.setOption('filters', {
+        mime_types: [{ title: 'Images', extensions: 'jpg,jpeg,png,webp' }],
+      });
+      uploader.setOption('multi_selection', false);
+    });
+
+    state.coverMediaFrame.on('select', async () => {
+      const attachment = state.coverMediaFrame.state().get('selection').first()?.toJSON();
+      if (!attachment?.id) return;
+      const mime = String(attachment.mime || attachment.type || '').toLowerCase();
+      if (mime.startsWith('video/') || (mime && !mime.startsWith('image/'))) {
+        showToast(t.imagesOnly || t.errorGeneric);
+        return;
+      }
+      const url =
+        attachment.sizes?.medium?.url ||
+        attachment.sizes?.large?.url ||
+        attachment.sizes?.full?.url ||
+        attachment.url ||
+        null;
+      await persistBoardCoverAttachment(Number(attachment.id), url);
+    });
+  }
+
+  state.coverMediaFrame.open();
 }
 
 function currentSceneIndex() {
@@ -1665,6 +2213,7 @@ function syncDeleteConfirmButton() {
 
 function discardSheetState() {
   cleanupPendingPhoto();
+  cleanupPendingCover();
   state.sheet = null;
   state.pendingDeleteBoard = null;
   state.editingScene = null;
@@ -1788,6 +2337,16 @@ function bindEvents() {
     });
   }
 
+  const coverInputs = root.querySelectorAll('#sb-cover-input, #sb-cover-camera');
+  coverInputs.forEach((input) => {
+    input.addEventListener('change', async (ev) => {
+      const file = ev.target.files?.[0];
+      ev.target.value = '';
+      if (!file) return;
+      await persistBoardCoverFile(file);
+    });
+  });
+
   const editBoardForm = root.querySelector('#sb-edit-board-form');
   if (editBoardForm) {
     editBoardForm.addEventListener('submit', onRenameBoard);
@@ -1896,12 +2455,16 @@ async function onActionClick(e) {
     'new-board',
     'delete-board',
     'add-scene',
+    'insert-scene-after',
     'edit-scene',
     'delete-scene',
     'remove-photo',
     'pick-media',
     'toggle-public',
     'rename-board',
+    'edit-board-cover',
+    'pick-cover-media',
+    'remove-board-cover',
     'toggle-board-menu',
     'toggle-select-mode',
     'toggle-scene-select',
@@ -2019,7 +2582,8 @@ async function onActionClick(e) {
     state.selectMode = !state.selectMode;
     state.selectedSceneIds = [];
     state.selectAnchorId = null;
-    if (state.selectMode) {
+    // Select is for Board + Script; leave Timeline for the list.
+    if (state.selectMode && state.mode === 'timeline') {
       state.mode = 'list';
     }
     render();
@@ -2129,6 +2693,38 @@ async function onActionClick(e) {
     };
     state.boardBaseline = boardSnapshot(state.boardDraft);
     openSheet('editBoard');
+    return;
+  }
+
+  if (action === 'edit-board-cover') {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!state.board?.id) return;
+    state.boardMenuOpen = false;
+    cleanupPendingCover();
+    openSheet('boardCover');
+    return;
+  }
+
+  if (action === 'pick-cover-media') {
+    e.preventDefault();
+    openBoardCoverLibrary();
+    return;
+  }
+
+  if (action === 'remove-board-cover') {
+    e.preventDefault();
+    if (!state.board?.id) return;
+    try {
+      cleanupPendingCover();
+      showToast(t.saving || '…');
+      const updated = await api.updateBoard(state.board.id, { cover_image_id: null });
+      applyBoardCoverToState(updated);
+      render();
+      showToast(t.coverSaved || 'Cover updated');
+    } catch (err) {
+      showToast(err.message || t.errorGeneric);
+    }
     return;
   }
 
@@ -2243,6 +2839,25 @@ async function onActionClick(e) {
     return;
   }
 
+  if (action === 'copy-all-scripts') {
+    e.preventDefault();
+    e.stopPropagation();
+    if (await copyTextToClipboard(collectAllScriptsText())) {
+      showToast(t.scriptsCopied || t.scriptCopied || 'Scripts copied');
+    }
+    return;
+  }
+
+  if (action === 'copy-scene-script') {
+    e.preventDefault();
+    e.stopPropagation();
+    const id = Number(el.dataset.id);
+    if (await copyTextToClipboard(liveScriptText(id))) {
+      showToast(t.scriptCopied || 'Script copied');
+    }
+    return;
+  }
+
   if (action === 'add-scene') {
     cleanupPendingPhoto();
     state.removePhoto = false;
@@ -2250,6 +2865,14 @@ async function onActionClick(e) {
     state.editingScene = emptySceneDraft();
     state.sceneBaseline = sceneSnapshot(state.editingScene);
     openSheet('editScene');
+    return;
+  }
+
+  if (action === 'insert-scene-after') {
+    e.stopPropagation();
+    e.preventDefault();
+    const afterId = el.dataset.id ? Number(el.dataset.id) : null;
+    await insertSceneAfter(afterId);
     return;
   }
 
@@ -2653,6 +3276,15 @@ function cleanupPendingPhoto() {
   state.pendingPhoto = null;
 }
 
+async function persistSceneOrder(ids) {
+  try {
+    state.scenes = await api.reorderScenes(state.board.id, ids);
+  } catch (err) {
+    showToast(err.message || t.errorGeneric);
+    await refreshBoard();
+  }
+}
+
 function initSortable() {
   const el = document.getElementById('sb-sortable');
   if (!el || typeof Sortable === 'undefined') return;
@@ -2664,14 +3296,31 @@ function initSortable() {
     ghostClass: 'sb-sortable-ghost',
     delay: 120,
     delayOnTouchOnly: true,
+    filter: '.sb-insert-after',
+    preventOnFilter: false,
     onEnd: async () => {
       const ids = [...el.querySelectorAll('.sb-scene-card[data-id]')].map((n) => Number(n.dataset.id));
-      try {
-        state.scenes = await api.reorderScenes(state.board.id, ids);
-      } catch (err) {
-        showToast(err.message || t.errorGeneric);
-        await refreshBoard();
-      }
+      await persistSceneOrder(ids);
+    },
+  });
+}
+
+function initScriptSortable() {
+  const el = document.getElementById('sb-script-sortable');
+  if (!el || typeof Sortable === 'undefined') return;
+
+  Sortable.create(el, {
+    handle: '.sb-script-handle',
+    draggable: '.sb-script-row:not(.sb-script-add)',
+    animation: 150,
+    ghostClass: 'sb-sortable-ghost',
+    delay: 120,
+    delayOnTouchOnly: true,
+    filter: '.sb-script-input, .sb-script-notes-input, .sb-script-copy, .sb-insert-after',
+    preventOnFilter: false,
+    onEnd: async () => {
+      const ids = [...el.querySelectorAll('.sb-script-row[data-id]')].map((n) => Number(n.dataset.id));
+      await persistSceneOrder(ids);
     },
   });
 }
@@ -3140,7 +3789,7 @@ function initLaneInsert(wrap) {
 
     if (!coarse) {
       trackEl.addEventListener('pointerenter', (e) => {
-        if (e.target.closest('.sb-film-clip')) {
+        if (e.target.closest('.sb-film-clip, .sb-clip-insert')) {
           hideAllGhosts();
           return;
         }
@@ -3155,7 +3804,7 @@ function initLaneInsert(wrap) {
         restoreGhostLabel(ghost);
       });
       trackEl.addEventListener('pointermove', (e) => {
-        if (e.target.closest('.sb-film-clip')) {
+        if (e.target.closest('.sb-film-clip, .sb-clip-insert')) {
           hideAllGhosts();
           return;
         }
@@ -3165,7 +3814,7 @@ function initLaneInsert(wrap) {
 
     trackEl.addEventListener('click', (e) => {
       if (state.recording) return;
-      if (e.target.closest('.sb-film-clip')) return;
+      if (e.target.closest('.sb-film-clip, .sb-clip-insert')) return;
       e.preventDefault();
 
       // Second tap on the pending ghost confirms insert/record.
@@ -3200,49 +3849,40 @@ function initLaneInsert(wrap) {
 }
 
 /**
- * Insert a new A-roll scene at the snapped timeline second (sort order).
- * @param {number} sec
+ * Insert a new A-roll scene after another scene (or at start when afterId is null).
+ * Subsequent A-roll packing shifts via sort order; B-roll + audio starting at/after
+ * the insert time are rippled forward by the new duration.
+ * @param {number|null} afterId
+ * @param {{ durationSec?: number }} [opts]
  */
-async function insertARollAt(sec) {
+async function insertSceneAfter(afterId, { durationSec = 3 } = {}) {
   if (!state.board?.id) return;
-  const at = Math.max(0, Math.round(Number(sec) || 0));
-  const aLayout = layoutARoll();
-  let beforeId = null;
-  for (let i = 0; i < aLayout.length; i++) {
-    const c = aLayout[i];
-    if (at < c.start + c.dur) {
-      beforeId = at <= c.start + c.dur / 2 ? c.id : aLayout[i + 1]?.id ?? null;
-      break;
-    }
+  const duration = Math.max(1, Number(durationSec) || 3);
+  const scenes = state.scenes || [];
+  let insertAt = 0;
+  if (afterId != null && afterId !== '') {
+    const idx = scenes.findIndex((s) => Number(s.id) === Number(afterId));
+    insertAt = idx >= 0 ? idx + 1 : scenes.length;
   }
+  const atSec = aRollTimeAtSortIndex(insertAt);
 
   try {
     showToast(t.saving || '…');
     const created = await api.createScene(state.board.id, {
       title: '',
       role: 'a_roll',
-      duration_sec: 3,
+      duration_sec: duration,
       description: '',
       script: '',
     });
 
-    const ids = (state.scenes || [])
-      .map((s) => Number(s.id))
-      .filter((id) => id !== Number(created.id));
-
-    let insertAt = ids.length;
-    if (beforeId != null) {
-      const idx = ids.indexOf(Number(beforeId));
-      insertAt = idx >= 0 ? idx : ids.length;
-    } else if (aLayout.length) {
-      const lastA = aLayout[aLayout.length - 1];
-      const idx = ids.indexOf(Number(lastA.id));
-      insertAt = idx >= 0 ? idx + 1 : ids.length;
-    }
+    const ids = scenes.map((s) => Number(s.id)).filter((id) => id !== Number(created.id));
     ids.splice(insertAt, 0, Number(created.id));
-
     state.scenes = await api.reorderScenes(state.board.id, ids);
+    await rippleTimelineFrom(atSec, duration);
+
     const scene = state.scenes.find((s) => Number(s.id) === Number(created.id)) || created;
+    cleanupPendingPhoto();
     state.editingScene = { ...scene };
     state.sceneBaseline = sceneSnapshot(state.editingScene);
     state.pendingPhoto = null;
@@ -3253,6 +3893,27 @@ async function insertARollAt(sec) {
     showToast(err.message || t.errorGeneric);
     await refreshBoard();
   }
+}
+
+/**
+ * Insert a new A-roll scene at the snapped timeline second (sort order).
+ * @param {number} sec
+ */
+async function insertARollAt(sec) {
+  if (!state.board?.id) return;
+  const at = Math.max(0, Math.round(Number(sec) || 0));
+  const aLayout = layoutARoll();
+  let afterId = null;
+  for (let i = 0; i < aLayout.length; i += 1) {
+    const c = aLayout[i];
+    if (at < c.start + c.dur) {
+      // First half of clip → insert before it; second half → after it.
+      afterId = at <= c.start + c.dur / 2 ? (aLayout[i - 1]?.id ?? null) : c.id;
+      break;
+    }
+    afterId = c.id;
+  }
+  await insertSceneAfter(afterId);
 }
 
 /**

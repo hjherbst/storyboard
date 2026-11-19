@@ -53,6 +53,11 @@ export const api = {
   getBoard: (id) => request(`/boards/${id}`),
   getBoardBySlug: (slug) => request(`/boards/by-slug/${encodeURIComponent(slug)}`),
   updateBoard: (id, payload) => request(`/boards/${id}`, { method: 'PATCH', body: payload }),
+  uploadBoardCover: async (boardId, blob, filename = 'cover.webp') => {
+    const form = new FormData();
+    form.append('file', blob, filename);
+    return request(`/boards/${boardId}/cover`, { method: 'POST', body: form });
+  },
   deleteBoard: (id) => request(`/boards/${id}`, { method: 'DELETE' }),
   listScenes: (boardId) => request(`/boards/${boardId}/scenes`),
   createScene: (boardId, payload) =>

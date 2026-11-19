@@ -4,7 +4,7 @@ Tags: storyboard, video, shotlist, production
 Requires at least: 6.0
 Tested up to: 6.8
 Requires PHP: 8.0
-Stable tag: 1.0.60
+Stable tag: 1.0.62
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,12 @@ Images are compressed in the browser (WebP, max 420px longest edge, target ≤ 7
 Updates are delivered from GitHub Releases (https://github.com/hjherbst/storyboard/releases).
 
 == Changelog ==
+
+= 1.0.62 =
+* Script view with inline edit, speak estimate, copy, and reorder
+* Insert scenes between shots in Board, Script, and Timeline (ripple later clips)
+* Board cover images on overview tiles
+* Dashboard widget: show private boards, pin to top
 
 = 1.0.59 =
 * Board nav label: All (was Back)

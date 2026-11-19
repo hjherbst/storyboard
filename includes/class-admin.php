@@ -18,10 +18,11 @@ final class Storyboards_Admin {
 	 */
 	public function register_hooks(): void {
 		add_action( 'wp_dashboard_setup', array( __CLASS__, 'register_dashboard_widget' ) );
+		add_filter( 'get_user_option_meta-box-order_dashboard', array( __CLASS__, 'pin_dashboard_widget' ) );
 	}
 
 	/**
-	 * Register the Storyboards overview widget.
+	 * Register the Storyboards overview widget and move it to the top.
 	 */
 	public static function register_dashboard_widget(): void {
 		if ( ! current_user_can( 'manage_storyboards' ) ) {
@@ -33,6 +34,46 @@ final class Storyboards_Admin {
 			__( 'Storyboards', 'storyboards' ),
 			array( __CLASS__, 'render_dashboard_widget' )
 		);
+
+		global $wp_meta_boxes;
+		if ( empty( $wp_meta_boxes['dashboard']['normal']['core']['storyboards_overview'] ) ) {
+			return;
+		}
+
+		$widget = $wp_meta_boxes['dashboard']['normal']['core']['storyboards_overview'];
+		unset( $wp_meta_boxes['dashboard']['normal']['core']['storyboards_overview'] );
+		$wp_meta_boxes['dashboard']['normal']['core'] = array_merge(
+			array( 'storyboards_overview' => $widget ),
+			$wp_meta_boxes['dashboard']['normal']['core']
+		);
+	}
+
+	/**
+	 * Keep the Storyboards widget first in the normal dashboard column.
+	 *
+	 * @param array<string,string>|false $order Saved meta-box order.
+	 * @return array<string,string>|false
+	 */
+	public static function pin_dashboard_widget( $order ) {
+		if ( ! current_user_can( 'manage_storyboards' ) ) {
+			return $order;
+		}
+
+		if ( ! is_array( $order ) ) {
+			$order = array();
+		}
+
+		$normal = isset( $order['normal'] ) ? explode( ',', (string) $order['normal'] ) : array();
+		$normal = array_values(
+			array_filter(
+				array_map( 'trim', $normal ),
+				static fn( string $id ): bool => '' !== $id && 'storyboards_overview' !== $id
+			)
+		);
+		array_unshift( $normal, 'storyboards_overview' );
+		$order['normal'] = implode( ',', $normal );
+
+		return $order;
 	}
 
 	/**
@@ -42,7 +83,8 @@ final class Storyboards_Admin {
 		$boards = get_posts(
 			array(
 				'post_type'              => Storyboards_CPT::POST_TYPE,
-				'post_status'            => 'publish',
+				// Boards are created as private (see REST create_board).
+				'post_status'            => array( 'publish', 'private' ),
 				'posts_per_page'         => 50,
 				'orderby'                => 'modified',
 				'order'                  => 'DESC',
@@ -71,12 +113,12 @@ final class Storyboards_Admin {
 		echo '</tr></thead><tbody>';
 
 		foreach ( $boards as $post ) {
-			$id    = (int) $post->ID;
-			$slug  = (string) $post->post_name;
-			$url   = Storyboards_Rewrite::board_url( $slug );
-			$row   = $stats[ $id ] ?? array( 'scene_count' => 0, 'total_duration_sec' => 0 );
-			$count = (int) $row['scene_count'];
-			$dur   = self::format_duration( (int) $row['total_duration_sec'] );
+			$id     = (int) $post->ID;
+			$slug   = (string) $post->post_name;
+			$url    = Storyboards_Rewrite::board_url( $slug );
+			$row    = $stats[ $id ] ?? array( 'scene_count' => 0, 'total_duration_sec' => 0 );
+			$count  = (int) $row['scene_count'];
+			$dur    = self::format_duration( (int) $row['total_duration_sec'] );
 			$aspect = Storyboards_CPT::sanitize_aspect(
 				(string) get_post_meta( $id, Storyboards_CPT::META_ASPECT, true )
 			);
@@ -108,17 +150,17 @@ final class Storyboards_Admin {
 		$in    = implode( ',', $board_ids );
 		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- IDs are cast to int.
 		$rows  = $wpdb->get_results(
-			"SELECT board_id,
+			"SELECT storyboard_id,
 				COUNT(*) AS scene_count,
 				COALESCE(SUM(CASE WHEN role = 'a_roll' THEN duration_sec ELSE 0 END), 0) AS total_duration_sec
 			FROM {$table}
-			WHERE board_id IN ({$in})
-			GROUP BY board_id"
+			WHERE storyboard_id IN ({$in})
+			GROUP BY storyboard_id"
 		);
 
 		$out = array();
 		foreach ( (array) $rows as $row ) {
-			$out[ (int) $row->board_id ] = array(
+			$out[ (int) $row->storyboard_id ] = array(
 				'scene_count'        => (int) $row->scene_count,
 				'total_duration_sec' => (int) $row->total_duration_sec,
 			);
